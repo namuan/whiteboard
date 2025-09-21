@@ -13,6 +13,7 @@
 !Makefile
 !.pre-commit-config.yaml
 !main.spec
+!install.command
 
 # Python
 __pycache__/
