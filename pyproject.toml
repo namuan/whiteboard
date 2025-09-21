@@ -1,0 +1,35 @@
+[project]
+name = "whiteboard"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [{ name = "Namuan", email = "namuan@deskriders.dev" }]
+requires-python = ">=3.12"
+
+dependencies = [
+    "pyqt6",
+]
+
+[project.urls]
+Homepage = "https://namuan.github.io/whiteboard/"
+Repository = "https://github.com/namuan/whiteboard"
+Documentation = "https://namuan.github.io/whiteboard/"
+
+
+[project.scripts]
+whiteboard = "whiteboard:main"
+
+[build-system]
+requires = ["uv_build>=0.8.17,<0.9.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pre-commit",
+    "tox-uv",
+    "ruff",
+    "pyinstaller",
+    "radon",
+    "xenon",
+]
