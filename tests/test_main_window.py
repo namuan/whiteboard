@@ -75,7 +75,8 @@ def test_status_bar_exists(main_window):
     """Test that status bar is properly set up."""
     status_bar = main_window.statusBar()
     assert status_bar is not None
-    assert status_bar.currentMessage() == "Ready"
+    assert "Ready" in status_bar.currentMessage()
+    assert "Double-click" in status_bar.currentMessage()
 
 
 def test_f11_key_toggles_fullscreen(main_window, app):

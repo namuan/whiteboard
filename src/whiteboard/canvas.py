@@ -10,6 +10,7 @@ from PyQt6.QtGui import QPainter, QWheelEvent, QKeyEvent, QMouseEvent
 from PyQt6.QtWidgets import QGraphicsScene, QGraphicsView, QGraphicsItem
 
 from .utils.logging_config import get_logger
+from .note_item import NoteItem
 
 
 class WhiteboardScene(QGraphicsScene):
@@ -220,6 +221,9 @@ class WhiteboardCanvas(QGraphicsView):
     # Signals
     zoom_changed = pyqtSignal(float)  # Emits current zoom factor
     pan_changed = pyqtSignal(QPointF)  # Emits current center point
+    note_created = pyqtSignal(NoteItem)  # Emits when a new note is created
+    note_hover_hint = pyqtSignal(str)  # Emits hint text for status bar
+    note_hover_ended = pyqtSignal()  # Emits when hover ends
 
     def __init__(self, scene: WhiteboardScene, parent=None):
         """
@@ -234,6 +238,9 @@ class WhiteboardCanvas(QGraphicsView):
 
         # Store scene reference
         self._scene = scene
+
+        # Connect to scene signals to handle notes added from other sources
+        self._scene.item_added.connect(self._on_item_added_to_scene)
 
         # Zoom configuration
         self._zoom_factor = 1.0
@@ -351,6 +358,88 @@ class WhiteboardCanvas(QGraphicsView):
             self.setCursor(Qt.CursorShape.ArrowCursor)
 
         super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:
+        """
+        Handle mouse double-click events for note creation.
+
+        Creates a new note at the double-click position if the click is on empty canvas.
+
+        Args:
+            event: Mouse double-click event
+        """
+        if event.button() == Qt.MouseButton.LeftButton:
+            # Convert click position to scene coordinates
+            scene_pos = self.mapToScene(event.pos())
+
+            # Check if click is on empty canvas (not on an existing item)
+            item_at_pos = self.scene().itemAt(scene_pos, self.transform())
+
+            if item_at_pos is None:
+                # Create new note at click position
+                self._create_note_at_position(scene_pos)
+                self.logger.debug(f"Created note via double-click at {scene_pos}")
+            else:
+                # Let the item handle the double-click (e.g., for editing)
+                super().mouseDoubleClickEvent(event)
+        else:
+            super().mouseDoubleClickEvent(event)
+
+    def _create_note_at_position(self, position: QPointF) -> NoteItem:
+        """
+        Create a new note at the specified position.
+
+        Args:
+            position: Scene position where the note should be created
+
+        Returns:
+            The newly created NoteItem
+        """
+        # Create new note
+        note = NoteItem("", position)
+
+        # Connect note signals for user feedback
+        note.hover_started.connect(self._on_note_hover_started)
+        note.hover_ended.connect(self._on_note_hover_ended)
+
+        # Add to scene
+        self.scene().addItem(note)
+
+        # Automatically enter edit mode for new notes
+        note.setFocus()
+        note.enter_edit_mode()
+
+        # Emit signal
+        self.note_created.emit(note)
+
+        self.logger.info(f"Created new note at position {position}")
+
+        return note
+
+    def _on_note_hover_started(self, hint_text: str) -> None:
+        """
+        Handle note hover start events.
+
+        Args:
+            hint_text: Hint text to display in status bar
+        """
+        self.note_hover_hint.emit(hint_text)
+
+    def _on_note_hover_ended(self) -> None:
+        """Handle note hover end events."""
+        self.note_hover_ended.emit()
+
+    def _on_item_added_to_scene(self, item) -> None:
+        """
+        Handle items added to the scene to connect note signals.
+
+        Args:
+            item: Graphics item added to scene
+        """
+        # Connect hover signals if it's a NoteItem
+        if isinstance(item, NoteItem):
+            item.hover_started.connect(self._on_note_hover_started)
+            item.hover_ended.connect(self._on_note_hover_ended)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         """

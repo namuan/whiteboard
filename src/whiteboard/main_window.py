@@ -257,7 +257,7 @@ class MainWindow(QMainWindow):
     def _setup_status_bar(self) -> None:
         """Create and configure the status bar."""
         status_bar = QStatusBar()
-        status_bar.showMessage("Ready")
+        status_bar.showMessage("Ready • Double-click empty area to create note")
         self.setStatusBar(status_bar)
 
     def _setup_canvas_connections(self) -> None:
@@ -265,6 +265,13 @@ class MainWindow(QMainWindow):
         # Connect canvas zoom changes to status bar updates
         self._canvas.zoom_changed.connect(self._on_zoom_changed)
         self._canvas.pan_changed.connect(self._on_pan_changed)
+
+        # Connect note creation signals
+        self._canvas.note_created.connect(self._on_note_created)
+
+        # Connect note hover signals for user hints
+        self._canvas.note_hover_hint.connect(self._on_note_hover_hint)
+        self._canvas.note_hover_ended.connect(self._on_note_hover_ended)
 
     def _on_zoom_changed(self, zoom_factor: float) -> None:
         """Handle zoom level changes."""
@@ -276,6 +283,23 @@ class MainWindow(QMainWindow):
         """Handle pan position changes."""
         # Update status bar with position info if needed
         pass
+
+    def _on_note_created(self, note) -> None:
+        """Handle note creation events."""
+        self.statusBar().showMessage("Note created - Double-click to edit", 3000)
+        self.logger.debug(f"Note created at position {note.pos()}")
+
+    def _on_note_hover_hint(self, hint_text: str) -> None:
+        """Handle note hover hint events."""
+        self.statusBar().showMessage(hint_text)
+
+    def _on_note_hover_ended(self) -> None:
+        """Handle note hover end events."""
+        # Show default zoom info or ready message
+        zoom_percent = int(self._canvas.get_zoom_factor() * 100)
+        self.statusBar().showMessage(
+            f"Zoom: {zoom_percent}% • Double-click empty area to create note"
+        )
 
     def toggle_fullscreen(self) -> None:
         """
