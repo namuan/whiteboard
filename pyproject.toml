@@ -32,4 +32,5 @@ dev = [
     "pyinstaller",
     "radon",
     "xenon",
+    "pytest-qt>=4.5.0",
 ]

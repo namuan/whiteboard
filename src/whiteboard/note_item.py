@@ -241,10 +241,6 @@ class NoteItem(QGraphicsTextItem):
         corner_radius = self._style["corner_radius"]
         painter.drawRoundedRect(rect, corner_radius, corner_radius)
 
-        # Draw move grip indicator in bottom-right corner if hovered or selected
-        if (option.state & QStyle.StateFlag.State_MouseOver) or self.isSelected():
-            self._draw_move_grip(painter, rect)
-
         # Draw text content
         painter.setPen(QPen(self._style["text_color"]))
         super().paint(painter, option, widget)
@@ -606,6 +602,10 @@ class NoteItem(QGraphicsTextItem):
                     self.scene()._check_and_expand_scene(item_rect)
 
             self.logger.debug(f"Note {self._note_id} moved to {new_position}")
+        elif change == QGraphicsTextItem.GraphicsItemChange.ItemPositionChange:
+            # Force scene update during position changes to prevent trails
+            if self.scene():
+                self.scene().update()
 
         return super().itemChange(change, value)
 
