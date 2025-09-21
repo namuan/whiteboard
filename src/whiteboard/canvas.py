@@ -6,11 +6,12 @@ that provide infinite scrolling, zooming, and interactive note management.
 """
 
 from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal
-from PyQt6.QtGui import QPainter, QWheelEvent, QKeyEvent, QMouseEvent
+from PyQt6.QtGui import QPainter, QWheelEvent, QKeyEvent, QMouseEvent, QColor, QPen
 from PyQt6.QtWidgets import QGraphicsScene, QGraphicsView, QGraphicsItem
 
 from .utils.logging_config import get_logger
 from .note_item import NoteItem
+from .connection_item import ConnectionItem
 
 
 class WhiteboardScene(QGraphicsScene):
@@ -222,6 +223,9 @@ class WhiteboardCanvas(QGraphicsView):
     zoom_changed = pyqtSignal(float)  # Emits current zoom factor
     pan_changed = pyqtSignal(QPointF)  # Emits current center point
     note_created = pyqtSignal(NoteItem)  # Emits when a new note is created
+    connection_created = pyqtSignal(
+        ConnectionItem
+    )  # Emits when a new connection is created
     note_hover_hint = pyqtSignal(str)  # Emits hint text for status bar
     note_hover_ended = pyqtSignal()  # Emits when hover ends
 
@@ -252,8 +256,20 @@ class WhiteboardCanvas(QGraphicsView):
         self._pan_mode = False
         self._last_pan_point = QPointF()
 
+        # Connection creation configuration
+        self._connection_mode = False
+        self._connection_start_note = None
+        self._connection_preview_line = None
+        self._connection_drag_threshold = (
+            10  # Minimum drag distance to start connection
+        )
+        self._connection_target_note = None  # Currently highlighted target note
+
         # Configure view properties
         self._setup_view()
+
+        # Track existing connections to prevent duplicates
+        self._connections = []
 
         self.logger.info("WhiteboardCanvas initialized")
 
@@ -297,7 +313,7 @@ class WhiteboardCanvas(QGraphicsView):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """
-        Handle mouse press events for pan initiation.
+        Handle mouse press events for pan initiation and connection creation.
 
         Args:
             event: Mouse press event
@@ -315,13 +331,26 @@ class WhiteboardCanvas(QGraphicsView):
             self._pan_mode = True
             self._last_pan_point = event.position()
             self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif (
+            event.button() == Qt.MouseButton.LeftButton
+            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+        ):
+            # Connection creation mode with Ctrl+Left click
+            scene_pos = self.mapToScene(event.pos())
+            item_at_pos = self.scene().itemAt(scene_pos, self.transform())
+
+            if isinstance(item_at_pos, NoteItem):
+                self._start_connection_creation(item_at_pos, event.position())
+            else:
+                # Default behavior if not clicking on a note
+                super().mousePressEvent(event)
         else:
             # Default behavior for other mouse interactions
             super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         """
-        Handle mouse move events for panning.
+        Handle mouse move events for panning and connection creation.
 
         Args:
             event: Mouse move event
@@ -340,12 +369,15 @@ class WhiteboardCanvas(QGraphicsView):
 
             # Emit pan changed signal
             self.pan_changed.emit(self.mapToScene(self.rect().center()))
+        elif self._connection_mode:
+            # Update connection preview
+            self._update_connection_preview(event.position())
         else:
             super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         """
-        Handle mouse release events to end panning.
+        Handle mouse release events to end panning and complete connections.
 
         Args:
             event: Mouse release event
@@ -356,6 +388,9 @@ class WhiteboardCanvas(QGraphicsView):
             # End panning
             self._pan_mode = False
             self.setCursor(Qt.CursorShape.ArrowCursor)
+        elif event.button() == Qt.MouseButton.LeftButton and self._connection_mode:
+            # Complete connection creation
+            self._complete_connection_creation(event.position())
 
         super().mouseReleaseEvent(event)
 
@@ -659,5 +694,292 @@ class WhiteboardCanvas(QGraphicsView):
             "center_y": center_point.y(),
             "view_width": self.width(),
             "view_height": self.height(),
+            "connection_count": len(self._connections),
             **scene_stats,
         }
+
+    def _start_connection_creation(
+        self, start_note: NoteItem, mouse_pos: QPointF
+    ) -> None:
+        """
+        Start connection creation from a note.
+
+        Args:
+            start_note: Note to start the connection from
+            mouse_pos: Mouse position in view coordinates
+        """
+        self._connection_mode = True
+        self._connection_start_note = start_note
+        self._last_pan_point = mouse_pos  # Store initial position for drag threshold
+
+        # Change cursor to indicate connection mode
+        self.setCursor(Qt.CursorShape.CrossCursor)
+
+        self.logger.debug(
+            f"Started connection creation from note {start_note.get_note_id()}"
+        )
+
+    def _update_connection_preview(self, mouse_pos: QPointF) -> None:
+        """
+        Update the connection preview line during dragging.
+
+        Args:
+            mouse_pos: Current mouse position in view coordinates
+        """
+        if not self._connection_start_note:
+            return
+
+        # Check if we've moved enough to start showing preview
+        drag_distance = (mouse_pos - self._last_pan_point).manhattanLength()
+        if drag_distance < self._connection_drag_threshold:
+            return
+
+        # Convert positions to scene coordinates
+        start_scene_pos = self._connection_start_note.mapToScene(
+            self._connection_start_note.boundingRect().center()
+        )
+        end_scene_pos = self.mapToScene(mouse_pos.toPoint())
+
+        # Check if mouse is over a valid target note
+        item_at_pos = self.scene().itemAt(end_scene_pos, self.transform())
+        target_note = None
+
+        if (
+            isinstance(item_at_pos, NoteItem)
+            and item_at_pos != self._connection_start_note
+        ):
+            # Check if connection doesn't already exist
+            if not self._connection_exists(self._connection_start_note, item_at_pos):
+                target_note = item_at_pos
+
+        # Update target note highlighting
+        self._update_target_note_highlight(target_note)
+
+        # Create or update preview line
+        if not self._connection_preview_line:
+            from PyQt6.QtWidgets import QGraphicsLineItem
+
+            self._connection_preview_line = QGraphicsLineItem()
+            self._connection_preview_line.setZValue(
+                -0.5
+            )  # Behind notes but above background
+            self.scene().addItem(self._connection_preview_line)
+
+        # Update preview line style based on whether we have a valid target
+        if target_note:
+            # Green dashed line when over valid target
+            pen = QPen(QColor(50, 150, 50), 3, Qt.PenStyle.DashLine)
+            # Emit hint for status bar
+            self.note_hover_hint.emit("🔗 Release to create connection")
+        else:
+            # Gray dashed line when not over valid target
+            pen = QPen(Qt.GlobalColor.gray, 2, Qt.PenStyle.DashLine)
+            # Emit hint for status bar
+            self.note_hover_hint.emit("🔗 Drag to another note to create connection")
+
+        self._connection_preview_line.setPen(pen)
+
+        # Update preview line position
+        self._connection_preview_line.setLine(
+            start_scene_pos.x(),
+            start_scene_pos.y(),
+            end_scene_pos.x(),
+            end_scene_pos.y(),
+        )
+
+    def _update_target_note_highlight(self, target_note: NoteItem) -> None:
+        """
+        Update the visual highlighting of the target note during connection creation.
+
+        Args:
+            target_note: Note to highlight as connection target, or None to clear highlight
+        """
+        # Clear previous target highlight
+        if self._connection_target_note and self._connection_target_note != target_note:
+            self._connection_target_note.setSelected(False)
+            self._connection_target_note.update()
+
+        # Set new target highlight
+        if target_note and target_note != self._connection_target_note:
+            target_note.setSelected(True)
+            target_note.update()
+
+        self._connection_target_note = target_note
+
+    def _complete_connection_creation(self, mouse_pos: QPointF) -> None:
+        """
+        Complete connection creation by finding the target note.
+
+        Args:
+            mouse_pos: Final mouse position in view coordinates
+        """
+        if not self._connection_start_note:
+            self._cancel_connection_creation()
+            return
+
+        # Check if we've moved enough to create a connection
+        drag_distance = (mouse_pos - self._last_pan_point).manhattanLength()
+        if drag_distance < self._connection_drag_threshold:
+            self._cancel_connection_creation()
+            return
+
+        # Find target note
+        scene_pos = self.mapToScene(mouse_pos.toPoint())
+        item_at_pos = self.scene().itemAt(scene_pos, self.transform())
+
+        if (
+            isinstance(item_at_pos, NoteItem)
+            and item_at_pos != self._connection_start_note
+        ):
+            # Create connection between notes
+            if not self._connection_exists(self._connection_start_note, item_at_pos):
+                connection = self._create_connection(
+                    self._connection_start_note, item_at_pos
+                )
+                if connection:
+                    self.logger.info(
+                        f"Created connection between notes {self._connection_start_note.get_note_id()} "
+                        f"and {item_at_pos.get_note_id()}"
+                    )
+            else:
+                self.logger.debug("Connection already exists between these notes")
+
+        # Clean up connection creation mode
+        self._cancel_connection_creation()
+
+    def _cancel_connection_creation(self) -> None:
+        """Cancel connection creation and clean up."""
+        self._connection_mode = False
+        self._connection_start_note = None
+
+        # Clear target note highlight
+        if self._connection_target_note:
+            self._connection_target_note.setSelected(False)
+            self._connection_target_note.update()
+            self._connection_target_note = None
+
+        # Remove preview line if it exists
+        if self._connection_preview_line:
+            self.scene().removeItem(self._connection_preview_line)
+            self._connection_preview_line = None
+
+        # Clear status bar hint
+        self.note_hover_ended.emit()
+
+        # Reset cursor
+        self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def _connection_exists(self, note1: NoteItem, note2: NoteItem) -> bool:
+        """
+        Check if a connection already exists between two notes.
+
+        Args:
+            note1: First note
+            note2: Second note
+
+        Returns:
+            True if connection exists, False otherwise
+        """
+        for connection in self._connections:
+            if connection.is_connected_to_note(
+                note1
+            ) and connection.is_connected_to_note(note2):
+                return True
+        return False
+
+    def _create_connection(
+        self, start_note: NoteItem, end_note: NoteItem
+    ) -> ConnectionItem:
+        """
+        Create a new connection between two notes.
+
+        Args:
+            start_note: Starting note
+            end_note: Ending note
+
+        Returns:
+            The created ConnectionItem, or None if creation failed
+        """
+        try:
+            # Create connection
+            connection = ConnectionItem(start_note, end_note)
+
+            # Add to scene
+            self.scene().addItem(connection)
+
+            # Track connection
+            self._connections.append(connection)
+
+            # Connect to deletion signal to remove from tracking
+            connection.signals.connection_deleted.connect(
+                lambda: self._on_connection_deleted(connection)
+            )
+
+            # Emit signal
+            self.connection_created.emit(connection)
+
+            return connection
+
+        except Exception as e:
+            self.logger.error(f"Failed to create connection: {e}")
+            return None
+
+    def _on_connection_deleted(self, connection: ConnectionItem) -> None:
+        """
+        Handle connection deletion.
+
+        Args:
+            connection: Connection that was deleted
+        """
+        if connection in self._connections:
+            self._connections.remove(connection)
+            self.logger.debug(
+                f"Removed connection {connection.get_connection_id()} from tracking"
+            )
+
+    def get_connections(self) -> list[ConnectionItem]:
+        """
+        Get all connections in the canvas.
+
+        Returns:
+            List of ConnectionItem objects
+        """
+        return self._connections.copy()
+
+    def delete_connection(self, connection: ConnectionItem) -> None:
+        """
+        Delete a specific connection.
+
+        Args:
+            connection: Connection to delete
+        """
+        if connection in self._connections:
+            connection.delete_connection()
+
+    def delete_connections_for_note(self, note: NoteItem) -> None:
+        """
+        Delete all connections associated with a note.
+
+        Args:
+            note: Note whose connections should be deleted
+        """
+        # Create a copy of the list to avoid modification during iteration
+        connections_to_delete = [
+            conn for conn in self._connections if conn.is_connected_to_note(note)
+        ]
+
+        for connection in connections_to_delete:
+            connection.delete_connection()
+
+    def set_connection_mode(self, enabled: bool) -> None:
+        """
+        Enable or disable connection creation mode.
+
+        Args:
+            enabled: True to enable connection mode, False to disable
+        """
+        if not enabled and self._connection_mode:
+            self._cancel_connection_creation()
+
+        # This could be used for a toolbar button to toggle connection mode
+        # For now, we use Ctrl+click for connection creation
