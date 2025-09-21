@@ -46,6 +46,9 @@ class NoteItem(QGraphicsTextItem):
     - 4.2: Text and background color customization
     """
 
+    # Class variable for style clipboard
+    _copied_style = None
+
     # Signals
     position_changed = pyqtSignal(QPointF)
     content_changed = pyqtSignal(str)
@@ -73,21 +76,11 @@ class NoteItem(QGraphicsTextItem):
         self._is_editing = False
         self._original_text = text
 
-        # Default styling
-        self._style = {
-            "background_color": QColor(255, 255, 200),  # Light yellow
-            "border_color": QColor(200, 200, 150),  # Darker yellow
-            "text_color": QColor(0, 0, 0),  # Black text
-            "border_width": 2,
-            "corner_radius": 8,
-            "padding": 10,
-            "font_family": "Arial",
-            "font_size": 12,
-            "font_bold": False,
-            "font_italic": False,
-            "min_width": 100,
-            "min_height": 60,
-        }
+        # Get default styling from style manager
+        from .style_manager import get_style_manager
+
+        style_manager = get_style_manager()
+        self._style = style_manager.get_default_style()
 
         # Setup note
         self._setup_note(text, position)
@@ -348,8 +341,30 @@ class NoteItem(QGraphicsTextItem):
 
         menu.addSeparator()
 
-        # Add style options
-        style_menu = menu.addMenu("🎨 Style")
+        # Add comprehensive style dialog
+        style_action = menu.addAction("🎨 Style...")
+        style_action.triggered.connect(self._open_style_dialog)
+
+        menu.addSeparator()
+
+        # Add template options
+        template_menu = menu.addMenu("📋 Templates")
+        self._populate_template_menu(template_menu)
+
+        menu.addSeparator()
+
+        # Add style copying options
+        copy_menu = menu.addMenu("📄 Copy Style")
+        copy_style_action = copy_menu.addAction("📋 Copy Style from This Note")
+        copy_style_action.triggered.connect(self._copy_style_to_clipboard)
+
+        paste_style_action = copy_menu.addAction("📄 Paste Style to This Note")
+        paste_style_action.triggered.connect(self._paste_style_from_clipboard)
+
+        menu.addSeparator()
+
+        # Add quick style options
+        style_menu = menu.addMenu("🎨 Quick Colors")
 
         # Color options
         yellow_action = style_menu.addAction("💛 Yellow")
@@ -386,6 +401,122 @@ class NoteItem(QGraphicsTextItem):
         # Emit a longer help message
         help_text = "💡 To move notes: Hover over a note and drag it to a new position. The cursor will change to indicate you can move the note."
         self.hover_started.emit(help_text)
+
+    def _open_style_dialog(self) -> None:
+        """Open the comprehensive style dialog."""
+        # Import here to avoid circular imports
+        from .note_style_dialog import NoteStyleDialog
+
+        # Get the main window as parent (walk up the widget hierarchy)
+        parent = None
+        if self.scene() and self.scene().views():
+            view = self.scene().views()[0]
+            parent = view.window()
+
+        # Open style dialog
+        new_style = NoteStyleDialog.get_note_style(self._style, parent)
+        if new_style:
+            self.set_style(new_style)
+            self.logger.debug(f"Applied new style from dialog to note {self._note_id}")
+
+    def _populate_template_menu(self, template_menu) -> None:
+        """Populate the template menu with available templates."""
+        from .style_manager import get_style_manager
+
+        style_manager = get_style_manager()
+        template_names = style_manager.get_template_names()
+
+        if not template_names:
+            no_templates_action = template_menu.addAction("No templates available")
+            no_templates_action.setEnabled(False)
+            return
+
+        # Add template actions
+        for template_name in template_names:
+            template_style = style_manager.get_template_style(template_name)
+            if template_style:
+                # Create action with template name and style summary
+                summary = style_manager.get_style_summary(template_style)
+                action_text = f"{template_name}"
+                action = template_menu.addAction(action_text)
+                action.setToolTip(f"Apply {template_name} template\n{summary}")
+                action.triggered.connect(
+                    lambda checked, name=template_name: self._apply_template(name)
+                )
+
+        template_menu.addSeparator()
+
+        # Add option to save current style as template
+        save_template_action = template_menu.addAction("💾 Save as Template...")
+        save_template_action.triggered.connect(self._save_as_template)
+
+    def _apply_template(self, template_name: str) -> None:
+        """Apply a template to this note."""
+        from .style_manager import get_style_manager
+
+        style_manager = get_style_manager()
+        if style_manager.apply_template_to_note(self, template_name):
+            self.logger.debug(
+                f"Applied template '{template_name}' to note {self._note_id}"
+            )
+        else:
+            self.logger.warning(
+                f"Failed to apply template '{template_name}' to note {self._note_id}"
+            )
+
+    def _save_as_template(self) -> None:
+        """Save current note style as a new template."""
+        from PyQt6.QtWidgets import QInputDialog
+        from .style_manager import get_style_manager
+
+        # Get template name from user
+        parent = None
+        if self.scene() and self.scene().views():
+            view = self.scene().views()[0]
+            parent = view.window()
+
+        template_name, ok = QInputDialog.getText(
+            parent, "Save as Template", "Enter template name:", text="My Template"
+        )
+
+        if ok and template_name.strip():
+            style_manager = get_style_manager()
+            if style_manager.create_template_from_note(self, template_name.strip()):
+                self.hover_started.emit(
+                    f"✅ Template '{template_name}' saved successfully"
+                )
+                self.logger.debug(
+                    f"Created template '{template_name}' from note {self._note_id}"
+                )
+            else:
+                self.hover_started.emit(f"❌ Template '{template_name}' already exists")
+                self.logger.warning(f"Template '{template_name}' already exists")
+
+    def _copy_style_to_clipboard(self) -> None:
+        """Copy this note's style to a global clipboard."""
+        from .style_manager import get_style_manager
+
+        style_manager = get_style_manager()
+
+        # Store style in a class variable for simple clipboard functionality
+        NoteItem._copied_style = style_manager.copy_style_from_note(self)
+
+        self.hover_started.emit("📋 Style copied! Right-click another note to paste.")
+        self.logger.debug(f"Copied style from note {self._note_id}")
+
+    def _paste_style_from_clipboard(self) -> None:
+        """Paste style from clipboard to this note."""
+        if hasattr(NoteItem, "_copied_style") and NoteItem._copied_style:
+            from .style_manager import get_style_manager
+
+            style_manager = get_style_manager()
+            style_manager.apply_style_to_note(self, NoteItem._copied_style)
+
+            self.hover_started.emit("📄 Style pasted successfully!")
+            self.logger.debug(f"Pasted style to note {self._note_id}")
+        else:
+            self.hover_started.emit("❌ No style copied yet. Copy a style first.")
+            self.logger.debug("No style in clipboard to paste")
 
     def focusInEvent(self, event) -> None:
         """

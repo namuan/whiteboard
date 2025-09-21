@@ -4,7 +4,8 @@ Logging configuration for the Digital Whiteboard application.
 
 import logging
 import logging.handlers
-from pathlib import Path
+
+from .config_paths import get_app_log_dir, ensure_app_directories
 
 
 def setup_logging(log_level: str = "INFO", log_file: str | None = None) -> None:
@@ -15,9 +16,9 @@ def setup_logging(log_level: str = "INFO", log_file: str | None = None) -> None:
         log_level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
         log_file: Optional log file path. If None, uses default location.
     """
-    # Create logs directory if it doesn't exist
-    log_dir = Path.home() / ".whiteboard" / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    # Ensure log directory exists
+    log_dir = get_app_log_dir()
+    ensure_app_directories()
 
     # Default log file path
     if log_file is None:
