@@ -4,8 +4,6 @@ Main window for the Digital Whiteboard application.
 
 from PyQt6.QtWidgets import (
     QMainWindow,
-    QVBoxLayout,
-    QWidget,
     QToolBar,
     QStatusBar,
     QMessageBox,
@@ -15,6 +13,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QKeySequence
 
 from .utils.logging_config import get_logger
+from .canvas import WhiteboardScene, WhiteboardCanvas
 
 
 class MainWindow(QMainWindow):
@@ -33,12 +32,17 @@ class MainWindow(QMainWindow):
         self.logger = get_logger(__name__)
         self._is_fullscreen = False
 
+        # Initialize canvas components
+        self._scene = WhiteboardScene()
+        self._canvas = WhiteboardCanvas(self._scene)
+
         # Initialize UI components
         self._setup_window()
         self._setup_central_widget()
         self._setup_menu_bar()
         self._setup_toolbar()
         self._setup_status_bar()
+        self._setup_canvas_connections()
 
         self.logger.info("MainWindow initialized successfully")
 
@@ -57,14 +61,8 @@ class MainWindow(QMainWindow):
 
     def _setup_central_widget(self) -> None:
         """Set up the central widget area."""
-        # Placeholder for canvas - will be implemented in later tasks
-        central_widget = QWidget()
-        layout = QVBoxLayout(central_widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        # TODO: Canvas will be added here in task 2
-
-        self.setCentralWidget(central_widget)
+        # Set canvas as central widget
+        self.setCentralWidget(self._canvas)
 
     def _setup_menu_bar(self) -> None:
         """Create and configure the menu bar."""
@@ -262,6 +260,23 @@ class MainWindow(QMainWindow):
         status_bar.showMessage("Ready")
         self.setStatusBar(status_bar)
 
+    def _setup_canvas_connections(self) -> None:
+        """Set up signal connections between canvas and main window."""
+        # Connect canvas zoom changes to status bar updates
+        self._canvas.zoom_changed.connect(self._on_zoom_changed)
+        self._canvas.pan_changed.connect(self._on_pan_changed)
+
+    def _on_zoom_changed(self, zoom_factor: float) -> None:
+        """Handle zoom level changes."""
+        zoom_percent = int(zoom_factor * 100)
+        self.statusBar().showMessage(f"Zoom: {zoom_percent}%")
+        self.logger.debug(f"Zoom changed to {zoom_percent}%")
+
+    def _on_pan_changed(self, center_point) -> None:
+        """Handle pan position changes."""
+        # Update status bar with position info if needed
+        pass
+
     def toggle_fullscreen(self) -> None:
         """
         Toggle fullscreen mode.
@@ -372,19 +387,19 @@ class MainWindow(QMainWindow):
     def _on_zoom_in(self) -> None:
         """Handle Zoom In action."""
         self.logger.info("Zoom In action triggered")
-        # TODO: Implement in later tasks
+        self._canvas.zoom_in()
 
     def _on_zoom_out(self) -> None:
         """Handle Zoom Out action."""
         self.logger.info("Zoom Out action triggered")
-        # TODO: Implement in later tasks
+        self._canvas.zoom_out()
 
     def _on_actual_size(self) -> None:
         """Handle Actual Size action."""
         self.logger.info("Actual Size action triggered")
-        # TODO: Implement in later tasks
+        self._canvas.reset_zoom()
 
     def _on_fit_window(self) -> None:
         """Handle Fit to Window action."""
         self.logger.info("Fit to Window action triggered")
-        # TODO: Implement in later tasks
+        self._canvas.fit_content_in_view()
