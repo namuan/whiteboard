@@ -11,14 +11,195 @@ from PyQt6.QtWidgets import (
     QApplication,
     QLabel,
     QGraphicsView,
+    QWidget,
+    QHBoxLayout,
+    QPushButton,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
-from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QPointF
+from PyQt6.QtGui import QAction, QKeySequence, QFont
 from pathlib import Path
 
+from .goto_dialog import GoToDialog
 from .utils.logging_config import get_logger
 from .canvas import WhiteboardScene, WhiteboardCanvas
 from .session_manager import SessionManager, SessionError
+from .navigation_panel import NavigationPanel
+
+
+class PositionIndicator(QWidget):
+    """A widget that displays the current view center coordinates with a center button."""
+
+    center_requested = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._setup_ui()
+
+    def _setup_ui(self):
+        """Set up the position indicator UI."""
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        # Position label
+        self._position_label = QLabel("Position: (0, 0)")
+        self._position_label.setStyleSheet("""
+            QLabel {
+                background-color: rgba(240, 240, 240, 0.8);
+                border: 1px solid #ccc;
+                border-radius: 3px;
+                padding: 2px 6px;
+                font-family: monospace;
+                font-size: 11px;
+            }
+        """)
+        self._position_label.setMinimumWidth(140)
+
+        # Center button
+        self._center_button = QPushButton("⌖")
+        self._center_button.setToolTip("Center on Content")
+        self._center_button.setFixedSize(20, 20)
+        self._center_button.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(220, 220, 220, 0.9);
+                border: 1px solid #aaa;
+                border-radius: 3px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: rgba(200, 200, 200, 0.9);
+            }
+            QPushButton:pressed {
+                background-color: rgba(180, 180, 180, 0.9);
+            }
+        """)
+        self._center_button.clicked.connect(self.center_requested.emit)
+
+        layout.addWidget(self._position_label)
+        layout.addWidget(self._center_button)
+
+    def update_position(self, center_point):
+        """Update the position display."""
+        pos_text = f"Position: ({center_point.x():.0f}, {center_point.y():.0f})"
+        self._position_label.setText(pos_text)
+
+    def get_position_text(self):
+        """Get the current position text."""
+        return self._position_label.text()
+
+
+class ZoomIndicator(QWidget):
+    """
+    Enhanced zoom indicator widget for the status bar.
+
+    Displays current zoom percentage with interactive controls.
+    """
+
+    # Signals
+    zoom_reset_requested = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.logger = get_logger(__name__)
+        self._current_zoom = 100.0
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        """Set up the zoom indicator UI."""
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(4)
+
+        # Zoom percentage label
+        self._zoom_label = QLabel("100%")
+        self._zoom_label.setMinimumWidth(50)
+        self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Reset button (small)
+        self._reset_btn = QPushButton("⌂")
+        self._reset_btn.setMaximumSize(20, 20)
+        self._reset_btn.setToolTip("Reset zoom to 100%")
+        self._reset_btn.clicked.connect(self.zoom_reset_requested.emit)
+
+        # Style the components
+        self._apply_styles()
+
+        layout.addWidget(self._zoom_label)
+        layout.addWidget(self._reset_btn)
+
+        self.logger.debug("ZoomIndicator widget initialized")
+
+    def _apply_styles(self) -> None:
+        """Apply consistent styling to the zoom indicator."""
+        # Main widget style
+        self.setStyleSheet("""
+            ZoomIndicator {
+                background-color: rgba(245, 245, 245, 0.9);
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                padding: 1px;
+            }
+        """)
+
+        # Label style
+        label_font = QFont("monospace", 10)
+        label_font.setBold(True)
+        self._zoom_label.setFont(label_font)
+        self._zoom_label.setStyleSheet("""
+            QLabel {
+                background-color: transparent;
+                color: #333;
+                padding: 2px 4px;
+            }
+        """)
+
+        # Button style
+        self._reset_btn.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(200, 200, 200, 0.8);
+                border: 1px solid #bbb;
+                border-radius: 2px;
+                font-size: 10px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: rgba(180, 180, 180, 0.9);
+            }
+            QPushButton:pressed {
+                background-color: rgba(160, 160, 160, 1.0);
+            }
+        """)
+
+    def update_zoom(self, zoom_factor: float) -> None:
+        """
+        Update the zoom display.
+
+        Args:
+            zoom_factor: Current zoom factor (e.g., 1.0 for 100%)
+        """
+        try:
+            self._current_zoom = zoom_factor * 100
+
+            # Format zoom with appropriate precision
+            if self._current_zoom >= 100:
+                zoom_text = f"{self._current_zoom:.0f}%"
+            else:
+                zoom_text = f"{self._current_zoom:.1f}%"
+
+            self._zoom_label.setText(zoom_text)
+
+            # Update tooltip with more info
+            self.setToolTip(f"Current zoom: {zoom_text}\nClick ⌂ to reset to 100%")
+
+            self.logger.debug(f"ZoomIndicator updated to {zoom_text}")
+
+        except Exception as e:
+            self.logger.error(f"Error updating zoom indicator: {e}")
+
+    def get_current_zoom(self) -> float:
+        """Get the current zoom percentage."""
+        return self._current_zoom
 
 
 class MainWindow(QMainWindow):
@@ -42,6 +223,9 @@ class MainWindow(QMainWindow):
         self._scene = WhiteboardScene()
         self._canvas = WhiteboardCanvas(self._scene)
 
+        # Initialize navigation panel
+        self._navigation_panel = NavigationPanel(self._scene)
+
         # Initialize session manager
         self._session_manager = SessionManager()
         self._setup_session_connections()
@@ -56,10 +240,12 @@ class MainWindow(QMainWindow):
         # Initialize UI components
         self._setup_window()
         self._setup_central_widget()
+        self._setup_navigation_panel()
         self._setup_menu_bar()
         self._setup_toolbar()
         self._setup_status_bar()
         self._setup_canvas_connections()
+        self._setup_navigation_connections()
 
         self.logger.info("MainWindow initialized successfully")
 
@@ -238,6 +424,15 @@ class MainWindow(QMainWindow):
 
         navigation_menu.addSeparator()
 
+        # GoTo coordinates action
+        goto_action = QAction("&Go To Coordinates...", self)
+        goto_action.setShortcut(QKeySequence("Ctrl+G"))
+        goto_action.setStatusTip("Navigate to specific coordinates")
+        goto_action.triggered.connect(self._on_goto_coordinates)
+        navigation_menu.addAction(goto_action)
+
+        navigation_menu.addSeparator()
+
         # Pan shortcuts (for display only - actual handling is in keyPressEvent)
         pan_left_action = QAction("Pan Left", self)
         pan_left_action.setShortcut(QKeySequence("Left"))
@@ -270,6 +465,20 @@ class MainWindow(QMainWindow):
         space_pan_action.setStatusTip("Hold Space and drag to pan the view")
         space_pan_action.setEnabled(False)  # Display only
         navigation_menu.addAction(space_pan_action)
+
+        view_menu.addSeparator()
+
+        # Navigation Panel toggle action
+        navigation_panel_action = QAction("&Navigation Panel", self)
+        navigation_panel_action.setShortcut(QKeySequence("Ctrl+Shift+N"))
+        navigation_panel_action.setStatusTip("Toggle navigation panel visibility")
+        navigation_panel_action.setCheckable(True)
+        navigation_panel_action.setChecked(True)  # Initially visible
+        navigation_panel_action.triggered.connect(self._toggle_navigation_panel)
+        view_menu.addAction(navigation_panel_action)
+
+        # Store reference to navigation panel action for updates
+        self._navigation_panel_action = navigation_panel_action
 
         view_menu.addSeparator()
 
@@ -342,66 +551,41 @@ class MainWindow(QMainWindow):
         self.setStatusBar(status_bar)
 
         # Add persistent zoom and position indicators on the right side
-        self._zoom_label = QLabel("Zoom: 100%")
-        self._position_label = QLabel("Position: (0.0, 0.0)")
+        self._zoom_indicator = ZoomIndicator()
+        self._position_indicator = PositionIndicator()
 
-        # Style the labels for better visibility
-        label_style = """
-            QLabel {
-                background-color: rgba(240, 240, 240, 0.8);
-                border: 1px solid #ccc;
-                border-radius: 3px;
-                padding: 2px 6px;
-                font-family: monospace;
-                font-size: 11px;
-            }
-        """
-        self._zoom_label.setStyleSheet(label_style)
-        self._position_label.setStyleSheet(label_style)
+        # Connect widget signals
+        self._zoom_indicator.zoom_reset_requested.connect(self._on_reset_zoom)
+        self._position_indicator.center_requested.connect(self._on_center_content)
 
-        # Set minimum widths for consistent display
-        self._zoom_label.setMinimumWidth(80)
-        self._position_label.setMinimumWidth(140)
+        # Add widgets to status bar (position first, then zoom indicator)
+        status_bar.addPermanentWidget(self._position_indicator)
+        status_bar.addPermanentWidget(self._zoom_indicator)
 
-        # Tighten margins for compact display
-        self._zoom_label.setContentsMargins(4, 0, 4, 0)
-        self._position_label.setContentsMargins(4, 0, 4, 0)
-
-        # Add labels to status bar (position first, then zoom)
-        status_bar.addPermanentWidget(self._position_label)
-        status_bar.addPermanentWidget(self._zoom_label)
-
-        # Initialize labels with actual values
+        # Initialize displays with actual values
         try:
-            current_zoom = self._canvas.get_zoom_factor() * 100
+            current_zoom = self._canvas.get_zoom_factor()
             center_point = self._canvas.get_center_point()
-            self._update_zoom_display(current_zoom)
-            self._update_position_display(center_point)
+            self._zoom_indicator.update_zoom(current_zoom)
+            self._position_indicator.update_position(center_point)
             self.logger.debug(
-                f"Enhanced status bar initialized with zoom={current_zoom:.1f}% and center=({center_point.x():.1f}, {center_point.y():.1f})"
+                f"Enhanced status bar initialized with zoom={current_zoom * 100:.1f}% and center=({center_point.x():.1f}, {center_point.y():.1f})"
             )
         except Exception as e:
             self.logger.error(
                 f"Failed to initialize enhanced status bar indicators: {e}"
             )
 
-    def _update_zoom_display(self, zoom_factor: float) -> None:
-        """Update zoom display with enhanced formatting."""
-        if self._zoom_label is not None:
-            # Format zoom with appropriate precision
-            if zoom_factor >= 100:
-                zoom_text = f"Zoom: {zoom_factor:.0f}%"
-            else:
-                zoom_text = f"Zoom: {zoom_factor:.1f}%"
-            self._zoom_label.setText(zoom_text)
-            self.logger.debug(f"Zoom display updated to {zoom_text}")
-
     def _update_position_display(self, center_point) -> None:
         """Update position display with enhanced formatting."""
-        if self._position_label is not None:
-            pos_text = f"Position: ({center_point.x():.0f}, {center_point.y():.0f})"
-            self._position_label.setText(pos_text)
-            self.logger.debug(f"Position display updated to {pos_text}")
+        if (
+            hasattr(self, "_position_indicator")
+            and self._position_indicator is not None
+        ):
+            self._position_indicator.update_position(center_point)
+            self.logger.debug(
+                f"Position display updated to ({center_point.x():.0f}, {center_point.y():.0f})"
+            )
 
     def _setup_session_connections(self) -> None:
         """Set up session manager signal connections."""
@@ -427,8 +611,8 @@ class MainWindow(QMainWindow):
 
     def _on_zoom_changed(self, zoom_factor: float) -> None:
         """Handle zoom level changes with enhanced status bar updates."""
-        zoom_percent = zoom_factor * 100
-        self._update_zoom_display(zoom_percent)
+        # Update the zoom indicator widget
+        self._zoom_indicator.update_zoom(zoom_factor)
 
         # Also refresh position to reflect any center shift on zoom
         try:
@@ -437,7 +621,43 @@ class MainWindow(QMainWindow):
         except Exception as e:
             self.logger.error(f"Failed to update position on zoom change: {e}")
 
+        zoom_percent = zoom_factor * 100
         self.logger.debug(f"Zoom changed to {zoom_percent:.1f}%")
+
+    def _on_goto_coordinates(self) -> None:
+        """Handle Go To Coordinates action."""
+        try:
+            # Get current center point
+            center_point = self._canvas.get_center_point()
+            current_x = center_point.x()
+            current_y = center_point.y()
+
+            # Show the GoTo dialog
+            result = GoToDialog.show_goto_dialog(current_x, current_y, self)
+            if result is not None:
+                target_x, target_y = result
+                self.logger.info(f"Navigating to coordinates: ({target_x}, {target_y})")
+
+                # Navigate to the specified coordinates
+                self._canvas.center_on_point(target_x, target_y)
+
+                # Update status bar
+                self.statusBar().showMessage(
+                    f"Navigated to ({target_x:.1f}, {target_y:.1f})", 3000
+                )
+
+        except Exception as e:
+            self.logger.error(f"Error in GoTo Coordinates: {e}")
+            self.statusBar().showMessage("Error navigating to coordinates", 3000)
+
+    def _on_reset_zoom(self) -> None:
+        """Handle zoom reset request from the zoom indicator."""
+        try:
+            # Reset zoom to 100% (factor 1.0)
+            self._canvas.reset_zoom()
+            self.logger.debug("Zoom reset to 100% from status bar indicator")
+        except Exception as e:
+            self.logger.error(f"Error resetting zoom from status bar: {e}")
 
     def _on_pan_changed(self, center_point) -> None:
         """Handle pan position changes with enhanced status bar updates."""
@@ -488,6 +708,25 @@ class MainWindow(QMainWindow):
             self.logger.error(f"Failed to toggle fullscreen: {e}")
             self._show_error(
                 "Fullscreen Error", f"Could not toggle fullscreen mode: {e}"
+            )
+
+    def _toggle_navigation_panel(self) -> None:
+        """Toggle navigation panel visibility."""
+        try:
+            if self._navigation_panel.isVisible():
+                self._navigation_panel.hide()
+                self.logger.info("Navigation panel hidden")
+            else:
+                self._navigation_panel.show()
+                self.logger.info("Navigation panel shown")
+
+            # Update action state
+            self._navigation_panel_action.setChecked(self._navigation_panel.isVisible())
+
+        except Exception as e:
+            self.logger.error(f"Failed to toggle navigation panel: {e}")
+            self._show_error(
+                "Navigation Panel Error", f"Could not toggle navigation panel: {e}"
             )
 
     def keyPressEvent(self, event):
@@ -841,3 +1080,82 @@ These shortcuts work when the canvas has focus."""
         if self._auto_save_timer.isActive():
             self._auto_save_timer.start(interval_ms)
         self.logger.info(f"Auto-save interval set to {interval_ms} ms")
+
+    def _setup_navigation_panel(self) -> None:
+        """Set up the navigation panel as a dockable widget."""
+        try:
+            # Add navigation panel as dockable widget
+            self.addDockWidget(
+                Qt.DockWidgetArea.RightDockWidgetArea, self._navigation_panel
+            )
+
+            # Initially show the navigation panel
+            self._navigation_panel.show()
+
+            self.logger.info("Navigation panel setup completed")
+        except Exception as e:
+            self.logger.error(f"Error setting up navigation panel: {e}")
+
+    def _setup_navigation_connections(self) -> None:
+        """Set up connections between navigation panel and canvas."""
+        try:
+            # Connect navigation panel signals to canvas methods
+            self._navigation_panel.zoom_changed.connect(
+                self._on_navigation_zoom_changed
+            )
+            self._navigation_panel.navigate_to_position.connect(
+                self._on_navigate_to_position
+            )
+            self._navigation_panel.fit_to_window_requested.connect(self._on_fit_window)
+            self._navigation_panel.center_on_content_requested.connect(
+                self._on_center_content
+            )
+
+            # Connect canvas signals to navigation panel updates
+            if hasattr(self._canvas, "zoom_changed"):
+                self._canvas.zoom_changed.connect(
+                    self._navigation_panel.update_zoom_display
+                )
+            if hasattr(self._canvas, "pan_changed"):
+                self._canvas.pan_changed.connect(
+                    self._navigation_panel.update_viewport_indicator
+                )
+            if hasattr(self._canvas, "viewport_changed"):
+                self._canvas.viewport_changed.connect(
+                    self._navigation_panel.update_viewport_indicator
+                )
+
+            # Connect scene changes to minimap updates
+            self._scene.changed.connect(self._navigation_panel.schedule_minimap_update)
+
+            self.logger.info("Navigation panel connections setup completed")
+        except Exception as e:
+            self.logger.error(f"Error setting up navigation connections: {e}")
+
+    def _on_navigation_zoom_changed(self, zoom_level: float) -> None:
+        """Handle zoom changes from navigation panel."""
+        try:
+            # Convert percentage to scale factor
+            scale_factor = zoom_level / 100.0
+
+            # Apply zoom to canvas
+            if hasattr(self._canvas, "set_zoom_level"):
+                self._canvas.set_zoom_level(scale_factor)
+            else:
+                # Fallback to transform-based zoom
+                self._canvas.resetTransform()
+                self._canvas.scale(scale_factor, scale_factor)
+
+            self.logger.debug(f"Navigation zoom changed to {zoom_level}%")
+        except Exception as e:
+            self.logger.error(f"Error handling navigation zoom change: {e}")
+
+    def _on_navigate_to_position(self, position: QPointF) -> None:
+        """Handle navigation to specific position from minimap."""
+        try:
+            # Center the canvas view on the specified position
+            self._canvas.centerOn(position)
+
+            self.logger.debug(f"Navigated to position: {position}")
+        except Exception as e:
+            self.logger.error(f"Error navigating to position: {e}")

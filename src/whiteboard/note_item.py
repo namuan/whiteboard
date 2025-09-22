@@ -601,6 +601,23 @@ class NoteItem(QGraphicsTextItem):
                 if hasattr(self.scene(), "_check_and_expand_scene"):
                     self.scene()._check_and_expand_scene(item_rect)
 
+                # Add logging to debug minimap refresh issue
+                self.logger.debug(
+                    f"Note {self._note_id} triggering minimap update after position change"
+                )
+
+                # Force minimap update by invalidating the scene
+                self.scene().invalidate()
+
+                # Also try directly calling the navigation panel update
+                if hasattr(self.scene(), "parent") and hasattr(
+                    self.scene().parent(), "_navigation_panel"
+                ):
+                    self.logger.debug(
+                        f"Note {self._note_id} directly scheduling minimap update"
+                    )
+                    self.scene().parent()._navigation_panel.schedule_minimap_update()
+
             self.logger.debug(f"Note {self._note_id} moved to {new_position}")
         elif change == QGraphicsTextItem.GraphicsItemChange.ItemPositionChange:
             # Force scene update during position changes to prevent trails

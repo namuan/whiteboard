@@ -8,7 +8,7 @@ from .utils.logging_config import setup_logging
 def main() -> None:
     """Main application entry point."""
     # Set up logging configuration
-    setup_logging()
+    setup_logging()  # Back to INFO level now that debugging is complete
     logger = logging.getLogger(__name__)
 
     try:

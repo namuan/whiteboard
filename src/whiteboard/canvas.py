@@ -236,6 +236,7 @@ class WhiteboardCanvas(QGraphicsView):
     # Signals
     zoom_changed = pyqtSignal(float)  # Emits current zoom factor
     pan_changed = pyqtSignal(QPointF)  # Emits current center point
+    viewport_changed = pyqtSignal(QRectF)  # Emits current viewport rectangle
     note_created = pyqtSignal(NoteItem)  # Emits when a new note is created
     connection_created = pyqtSignal(
         ConnectionItem
@@ -758,6 +759,23 @@ class WhiteboardCanvas(QGraphicsView):
             f"Centered on content at ({content_center.x():.0f}, {content_center.y():.0f}), moved {distance:.0f} pixels"
         )
 
+    def center_on_point(self, x: float, y: float) -> None:
+        """Center the view on a specific point with enhanced feedback."""
+        target_point = QPointF(x, y)
+        old_center = self.mapToScene(self.rect().center())
+
+        self.centerOn(target_point)
+        self.pan_changed.emit(target_point)
+
+        # Calculate distance moved for user feedback
+        distance = (
+            (target_point.x() - old_center.x()) ** 2
+            + (target_point.y() - old_center.y()) ** 2
+        ) ** 0.5
+        self.logger.info(
+            f"Centered on point ({target_point.x():.0f}, {target_point.y():.0f}), moved {distance:.0f} pixels"
+        )
+
     def fit_content_in_view(self) -> None:
         """Fit all content to be visible in the current view with enhanced feedback."""
         content_bounds = self._scene.get_content_bounds()
@@ -1110,3 +1128,13 @@ class WhiteboardCanvas(QGraphicsView):
 
         # This could be used for a toolbar button to toggle connection mode
         # For now, we use Ctrl+click for connection creation
+
+    def resizeEvent(self, event) -> None:
+        """Handle resize events and emit viewport changes."""
+        super().resizeEvent(event)
+
+        # Emit viewport changed signal when view is resized
+        viewport_rect = self.mapToScene(self.rect()).boundingRect()
+        self.viewport_changed.emit(viewport_rect)
+
+        self.logger.debug(f"Canvas resized to {event.size()}, viewport updated")

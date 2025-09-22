@@ -43,6 +43,10 @@ A powerful, infinite canvas whiteboard application built with PyQt6, featuring a
 - **Middle Mouse Button + Drag**: Pan the canvas
 - **Shift + Left Click + Drag**: Alternative pan mode
 
+### Navigation Panel Controls
+
+- **Ctrl + Shift + N**: Toggle navigation panel visibility
+
 ### File Operations
 
 - **Ctrl + N**: New whiteboard
@@ -65,6 +69,28 @@ A powerful, infinite canvas whiteboard application built with PyQt6, featuring a
 - **F11**: Toggle fullscreen mode
 
 ## Navigation Features
+
+### Navigation Panel
+
+The application includes a comprehensive navigation panel that provides:
+
+- **Minimap**: Bird's-eye view of the entire canvas with current viewport indicator
+- **Zoom Controls**: Precise zoom level adjustment with slider and spinbox
+- **Navigation Buttons**: Quick access to common navigation operations
+- **Performance Optimized**: Level-of-detail rendering for large canvases
+
+#### Minimap Features
+
+- **Click-to-Navigate**: Click anywhere on the minimap to instantly navigate to that location
+- **Viewport Indicator**: Visual rectangle showing your current view area
+- **Real-time Updates**: Automatically updates as you add or modify content
+- **Performance Scaling**: Intelligently simplifies display for large numbers of items
+
+#### Navigation Panel Controls
+
+- **Toggle Visibility**: Use Ctrl + Shift + N to show/hide the navigation panel
+- **Dockable**: Can be moved to different sides of the window or undocked entirely
+- **Resizable**: Adjust the panel size to fit your workflow preferences
 
 ### Adaptive Panning
 
@@ -145,9 +171,18 @@ The application maintains backward compatibility with previous session formats:
 - Old navigation preferences are preserved
 - Session files from previous versions load seamlessly
 
-## User Interface
+### User Interface
 
-### Status Bar
+#### Navigation Panel
+
+The navigation panel is a dockable widget that enhances your navigation experience:
+
+- **Location**: Initially docked on the right side of the window
+- **Minimap Section**: Provides overview of entire canvas with interactive navigation
+- **Zoom Section**: Integrated zoom controls with real-time feedback
+- **Performance Indicators**: Visual feedback for large canvas operations
+
+#### Status Bar
 
 - **Zoom Level**: Real-time zoom percentage display
 - **Position**: Current view center coordinates
@@ -173,6 +208,9 @@ Comprehensive menu structure with:
 3. **Use Space + Drag** for quick, temporary panning without changing tools
 4. **Take advantage of adaptive panning** - it automatically adjusts to your zoom level
 5. **Use Ctrl + 9** to get an overview of all your content at once
+6. **Toggle the navigation panel (Ctrl + Shift + N)** when you need more screen space
+7. **Click on the minimap** for instant navigation to any area of your canvas
+8. **Use the navigation panel's zoom controls** for precise zoom adjustments
 
 ## Troubleshooting
 
@@ -181,6 +219,14 @@ Comprehensive menu structure with:
 - Ensure the canvas has focus for keyboard shortcuts to work
 - Check that no modal dialogs are blocking input
 - Verify zoom level is within supported range (10%-1000%)
+- If the navigation panel is not visible, use Ctrl + Shift + N to toggle it
+- For minimap performance issues, try zooming out to reduce item density
+
+### Navigation Panel Issues
+
+- **Minimap not updating**: Check if auto-save is working properly, as minimap updates are tied to scene changes
+- **Click-to-navigate not working**: Ensure the minimap has focus and try clicking directly on content areas
+- **Performance issues**: The minimap uses level-of-detail rendering for large canvases - this is normal behavior
 
 ### Performance
 
