@@ -6,8 +6,17 @@ that provide infinite scrolling, zooming, and interactive note management.
 """
 
 from PyQt6.QtCore import Qt, QRectF, QPointF, pyqtSignal
-from PyQt6.QtGui import QPainter, QWheelEvent, QKeyEvent, QMouseEvent, QColor, QPen
-from PyQt6.QtWidgets import QGraphicsScene, QGraphicsView, QGraphicsItem
+from PyQt6.QtGui import (
+    QPainter,
+    QWheelEvent,
+    QKeyEvent,
+    QMouseEvent,
+    QColor,
+    QPen,
+    QContextMenuEvent,
+    QKeySequence,
+)
+from PyQt6.QtWidgets import QGraphicsScene, QGraphicsView, QGraphicsItem, QMenu
 
 from .utils.logging_config import get_logger
 from .note_item import NoteItem
@@ -515,13 +524,17 @@ class WhiteboardCanvas(QGraphicsView):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         """
-        Handle keyboard shortcuts for canvas navigation.
+        Handle keyboard shortcuts for canvas navigation and context menu actions.
 
         Args:
             event: Key press event
         """
         key = event.key()
         modifiers = event.modifiers()
+
+        # Handle context menu shortcuts
+        if self._handle_context_menu_shortcuts(key, modifiers):
+            return
 
         # Handle zoom shortcuts
         if self._handle_zoom_shortcuts(key, modifiers):
@@ -563,6 +576,128 @@ class WhiteboardCanvas(QGraphicsView):
             return True
 
         return False
+
+    def _handle_context_menu_shortcuts(self, key: int, modifiers) -> bool:
+        """
+        Handle context menu related keyboard shortcuts.
+
+        Args:
+            key: Key code
+            modifiers: Keyboard modifiers
+
+        Returns:
+            True if shortcut was handled, False otherwise
+        """
+        # Delete key - delete selected items
+        if key == Qt.Key.Key_Delete or key == Qt.Key.Key_Backspace:
+            return self._handle_delete_shortcut()
+
+        # Ctrl+C - Copy selected note content
+        if (modifiers & Qt.KeyboardModifier.ControlModifier) and key == Qt.Key.Key_C:
+            return self._handle_copy_shortcut()
+
+        # Ctrl+A - Select all items
+        if (modifiers & Qt.KeyboardModifier.ControlModifier) and key == Qt.Key.Key_A:
+            return self._handle_select_all_shortcut()
+
+        # Ctrl+N - Create new note at center
+        if (modifiers & Qt.KeyboardModifier.ControlModifier) and key == Qt.Key.Key_N:
+            return self._handle_new_note_shortcut()
+
+        return False
+
+    def _handle_delete_shortcut(self) -> bool:
+        """Handle delete key shortcut for selected items."""
+        selected_items = self.scene().selectedItems()
+        if not selected_items:
+            return False
+
+        from PyQt6.QtWidgets import QMessageBox
+
+        # Get parent window for dialog
+        parent = self.window()
+
+        # Confirm deletion
+        item_count = len(selected_items)
+        item_types = []
+        for item in selected_items:
+            if hasattr(item, "_note_id"):
+                item_types.append("note")
+            elif hasattr(item, "_connection_id"):
+                item_types.append("connection")
+
+        if not item_types:
+            return False
+
+        type_summary = ", ".join(set(item_types))
+        reply = QMessageBox.question(
+            parent,
+            "Delete Items",
+            f"Are you sure you want to delete {item_count} {type_summary}(s)?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            for item in selected_items:
+                if hasattr(item, "_delete_note"):
+                    item._delete_note()
+                elif hasattr(item, "delete_connection"):
+                    item.delete_connection()
+
+            self.logger.info(f"Deleted {item_count} items via keyboard shortcut")
+            return True
+
+        return True  # Handled even if cancelled
+
+    def _handle_copy_shortcut(self) -> bool:
+        """Handle copy shortcut for selected note content."""
+        selected_items = self.scene().selectedItems()
+        note_items = [item for item in selected_items if hasattr(item, "_note_id")]
+
+        if not note_items:
+            return False
+
+        if len(note_items) == 1:
+            # Single note - copy its content
+            note_items[0]._copy_note_content()
+        else:
+            # Multiple notes - copy all content
+            from PyQt6.QtWidgets import QApplication
+
+            all_text = []
+            for note in note_items:
+                text = note.get_text().strip()
+                if text:
+                    all_text.append(text)
+
+            if all_text:
+                clipboard = QApplication.clipboard()
+                clipboard.setText("\n\n".join(all_text))
+                self.logger.info(
+                    f"Copied content from {len(note_items)} notes to clipboard"
+                )
+
+        return True
+
+    def _handle_select_all_shortcut(self) -> bool:
+        """Handle select all shortcut."""
+        # Select all items in the scene
+        for item in self.scene().items():
+            if hasattr(item, "_note_id") or hasattr(item, "_connection_id"):
+                item.setSelected(True)
+
+        self.logger.debug("Selected all items via keyboard shortcut")
+        return True
+
+    def _handle_new_note_shortcut(self) -> bool:
+        """Handle new note shortcut - create note at center of view."""
+        # Get center of current view
+        center_point = self.mapToScene(self.rect().center())
+
+        # Create note at center
+        self._create_note_at_position(center_point)
+        return True
 
     def _handle_pan_shortcuts(self, key: int) -> bool:
         """
@@ -1138,3 +1273,268 @@ class WhiteboardCanvas(QGraphicsView):
         self.viewport_changed.emit(viewport_rect)
 
         self.logger.debug(f"Canvas resized to {event.size()}, viewport updated")
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        """
+        Handle context menu (right-click) events on the canvas.
+
+        Args:
+            event: Context menu event
+        """
+        # Check if we clicked on an item - if so, let the item handle it
+        scene_pos = self.mapToScene(event.pos())
+        item = self.scene().itemAt(scene_pos, self.transform())
+
+        if item is not None:
+            # Let the item handle its own context menu
+            super().contextMenuEvent(event)
+            return
+
+        # Create canvas context menu
+        menu = QMenu(self)
+
+        # Note creation section
+        create_menu = menu.addMenu("📝 Create Note")
+
+        # Quick note creation
+        quick_note_action = create_menu.addAction("✏️ Quick Note")
+        quick_note_action.setShortcut(QKeySequence("Ctrl+N"))
+        quick_note_action.triggered.connect(
+            lambda: self._create_note_at_position(scene_pos)
+        )
+
+        # Template notes
+        template_menu = create_menu.addMenu("📋 From Template")
+        self._populate_canvas_template_menu(template_menu, scene_pos)
+
+        menu.addSeparator()
+
+        # Canvas operations section
+        operations_menu = menu.addMenu("🔧 Canvas Operations")
+
+        # Select all notes
+        select_all_action = operations_menu.addAction("🔲 Select All Notes")
+        select_all_action.setShortcut(QKeySequence("Ctrl+A"))
+        select_all_action.triggered.connect(self._select_all_notes)
+
+        # Clear selection
+        clear_selection_action = operations_menu.addAction("❌ Clear Selection")
+        clear_selection_action.triggered.connect(self._clear_selection)
+
+        operations_menu.addSeparator()
+
+        # Center on content
+        center_action = operations_menu.addAction("🎯 Center on Content")
+        center_action.triggered.connect(self._center_on_content)
+
+        # Fit all content
+        fit_action = operations_menu.addAction("🔍 Fit All Content")
+        fit_action.triggered.connect(self._fit_all_content)
+
+        menu.addSeparator()
+
+        # Zoom controls section
+        zoom_menu = menu.addMenu("🔍 Zoom")
+
+        zoom_in_action = zoom_menu.addAction("🔍+ Zoom In")
+        zoom_in_action.triggered.connect(self.zoom_in)
+
+        zoom_out_action = zoom_menu.addAction("🔍- Zoom Out")
+        zoom_out_action.triggered.connect(self.zoom_out)
+
+        zoom_menu.addSeparator()
+
+        zoom_reset_action = zoom_menu.addAction("🔍 Reset Zoom (100%)")
+        zoom_reset_action.triggered.connect(self.reset_zoom)
+
+        menu.addSeparator()
+
+        # View information
+        info_action = menu.addAction("ℹ️ Canvas Info")
+        info_action.triggered.connect(self._show_canvas_info)
+
+        # Show menu at cursor position
+        menu.exec(event.globalPos())
+
+        # Accept the event to prevent propagation
+        event.accept()
+
+    def _create_note_at_position(
+        self, scene_pos: QPointF, text: str = "New Note"
+    ) -> NoteItem:
+        """
+        Create a new note at the specified scene position.
+
+        Args:
+            scene_pos: Position in scene coordinates
+            text: Initial text for the note
+
+        Returns:
+            The newly created NoteItem
+        """
+        note = NoteItem(text, scene_pos)
+        self._scene.addItem(note)
+
+        # Connect note signals
+        self._connect_note_signals(note)
+
+        # Emit signal
+        self.note_created.emit(note)
+
+        # Enter edit mode immediately
+        note.enter_edit_mode()
+
+        self.logger.info(
+            f"Created note at position ({scene_pos.x():.1f}, {scene_pos.y():.1f})"
+        )
+
+        return note
+
+    def _populate_canvas_template_menu(
+        self, template_menu: QMenu, scene_pos: QPointF
+    ) -> None:
+        """
+        Populate the template menu with available note templates.
+
+        Args:
+            template_menu: Menu to populate
+            scene_pos: Position where note will be created
+        """
+        from .style_manager import get_style_manager
+
+        style_manager = get_style_manager()
+        template_names = style_manager.get_template_names()
+
+        if not template_names:
+            no_templates_action = template_menu.addAction("No templates available")
+            no_templates_action.setEnabled(False)
+            return
+
+        for template_name in template_names:
+            action = template_menu.addAction(f"📄 {template_name}")
+            action.triggered.connect(
+                lambda checked,
+                name=template_name,
+                pos=scene_pos: self._create_note_from_template(name, pos)
+            )
+
+    def _create_note_from_template(
+        self, template_name: str, scene_pos: QPointF
+    ) -> None:
+        """
+        Create a note from a template at the specified position.
+
+        Args:
+            template_name: Name of the template to use
+            scene_pos: Position in scene coordinates
+        """
+        from .style_manager import get_style_manager
+
+        style_manager = get_style_manager()
+        template = style_manager.get_template_style(template_name)
+
+        if not template:
+            self.logger.warning(f"Template '{template_name}' not found")
+            return
+
+        # Create note with template text
+        note_text = f"{template_name} Note"
+        note = NoteItem(note_text, scene_pos)
+
+        # Apply template style
+        note.set_style(template)
+
+        self._scene.addItem(note)
+        self._connect_note_signals(note)
+        self.note_created.emit(note)
+
+        # Enter edit mode
+        note.enter_edit_mode()
+
+        self.logger.info(
+            f"Created note from template '{template_name}' at position ({scene_pos.x():.1f}, {scene_pos.y():.1f})"
+        )
+
+    def _select_all_notes(self) -> None:
+        """Select all notes on the canvas."""
+        for item in self._scene.items():
+            if isinstance(item, NoteItem):
+                item.setSelected(True)
+
+        self.logger.debug("Selected all notes on canvas")
+
+    def _clear_selection(self) -> None:
+        """Clear all selections on the canvas."""
+        self._scene.clearSelection()
+        self.logger.debug("Cleared all selections on canvas")
+
+    def _center_on_content(self) -> None:
+        """Center the view on all content."""
+        content_center = self._scene.center_on_content()
+        self.centerOn(content_center)
+        self.logger.debug(
+            f"Centered view on content at ({content_center.x():.1f}, {content_center.y():.1f})"
+        )
+
+    def _fit_all_content(self) -> None:
+        """Fit all content in the view."""
+        content_bounds = self._scene.get_content_bounds()
+        if not content_bounds.isNull():
+            # Add some padding around the content
+            padding = 50
+            padded_bounds = content_bounds.adjusted(
+                -padding, -padding, padding, padding
+            )
+            self.fitInView(padded_bounds, Qt.AspectRatioMode.KeepAspectRatio)
+
+            # Update zoom factor based on the new view
+            self._zoom_factor = self.transform().m11()
+            self.zoom_changed.emit(self._zoom_factor)
+
+            self.logger.debug(
+                f"Fitted all content in view, new zoom: {self._zoom_factor:.2f}"
+            )
+
+    def _show_canvas_info(self) -> None:
+        """Show canvas information in the status bar."""
+        stats = self._scene.get_scene_statistics()
+        info_text = (
+            f"📊 Canvas: {stats['item_count']} items, "
+            f"Zoom: {self._zoom_factor:.1%}, "
+            f"Scene: {stats['scene_width']:.0f}×{stats['scene_height']:.0f}, "
+            f"Content: {stats['content_width']:.0f}×{stats['content_height']:.0f}"
+        )
+
+        # Emit as hover hint to show in status bar
+        self.note_hover_hint.emit(info_text)
+
+        self.logger.debug(f"Canvas info: {stats}")
+
+    def _connect_note_signals(self, note) -> None:
+        """
+        Connect note signals to canvas handlers.
+
+        Args:
+            note: The note item to connect signals for
+        """
+        # Connect note signals if they exist
+        if hasattr(note, "text_changed"):
+            note.text_changed.connect(self._on_note_text_changed)
+        if hasattr(note, "position_changed"):
+            note.position_changed.connect(self._on_note_position_changed)
+        if hasattr(note, "style_changed"):
+            note.style_changed.connect(self._on_note_style_changed)
+
+    def _on_note_text_changed(self, note_id: str, text: str) -> None:
+        """Handle note text changes."""
+        self.logger.debug(f"Note {note_id} text changed: {text[:50]}...")
+
+    def _on_note_position_changed(self, position) -> None:
+        """Handle note position changes."""
+        self.logger.debug(
+            f"Note position changed to ({position.x():.1f}, {position.y():.1f})"
+        )
+
+    def _on_note_style_changed(self, note_id: str, style: dict) -> None:
+        """Handle note style changes."""
+        self.logger.debug(f"Note {note_id} style changed: {style}")

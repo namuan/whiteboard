@@ -15,6 +15,7 @@ from PyQt6.QtGui import (
     QPainterPath,
     QPolygonF,
     QPainterPathStroker,
+    QKeySequence,
 )
 from PyQt6.QtWidgets import (
     QGraphicsPathItem,
@@ -447,8 +448,9 @@ class ConnectionItem(QGraphicsPathItem):
         """
         menu = QMenu()
 
-        # Connection actions
+        # Delete connection
         delete_action = menu.addAction("🗑️ Delete Connection")
+        delete_action.setShortcut(QKeySequence.StandardKey.Delete)
         delete_action.triggered.connect(self.delete_connection)
 
         menu.addSeparator()
@@ -503,6 +505,9 @@ class ConnectionItem(QGraphicsPathItem):
 
         # Show menu at cursor position
         menu.exec(event.screenPos())
+
+        # Accept the event to prevent propagation
+        event.accept()
 
     def delete_connection(self) -> None:
         """Delete this connection from the scene."""

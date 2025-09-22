@@ -15,6 +15,7 @@ from PyQt6.QtGui import (
     QFont,
     QTextCursor,
     QTextCharFormat,
+    QKeySequence,
 )
 from PyQt6.QtWidgets import (
     QGraphicsTextItem,
@@ -385,12 +386,30 @@ class NoteItem(QGraphicsTextItem):
 
         menu.addSeparator()
 
+        # Add copy and delete operations
+        operations_menu = menu.addMenu("🔧 Operations")
+
+        # Copy note content
+        copy_content_action = operations_menu.addAction("📋 Copy Note Content")
+        copy_content_action.setShortcut(QKeySequence.StandardKey.Copy)
+        copy_content_action.triggered.connect(self._copy_note_content)
+
+        # Delete note
+        delete_action = operations_menu.addAction("🗑️ Delete Note")
+        delete_action.setShortcut(QKeySequence.StandardKey.Delete)
+        delete_action.triggered.connect(self._delete_note)
+
+        menu.addSeparator()
+
         # Add helpful info
         info_action = menu.addAction("ℹ️ How to move notes")
         info_action.triggered.connect(self._show_move_help)
 
         # Show menu at cursor position
         menu.exec(event.screenPos())
+
+        # Accept the event to prevent propagation
+        event.accept()
 
     def _show_move_help(self) -> None:
         """Show help information about moving notes."""
@@ -831,3 +850,43 @@ class NoteItem(QGraphicsTextItem):
             self._note_id = data["id"]
 
         self.logger.debug(f"Restored note {self._note_id} from data")
+
+    def _copy_note_content(self) -> None:
+        """Copy the note's text content to the system clipboard."""
+        from PyQt6.QtWidgets import QApplication
+
+        clipboard = QApplication.clipboard()
+        clipboard.setText(self.get_text())
+
+        self.hover_started.emit("📋 Note content copied to clipboard!")
+        self.logger.debug(f"Copied content of note {self._note_id} to clipboard")
+
+    def _delete_note(self) -> None:
+        """Delete this note from the scene."""
+        from PyQt6.QtWidgets import QMessageBox
+
+        # Get parent window for dialog
+        parent = None
+        if self.scene() and self.scene().views():
+            view = self.scene().views()[0]
+            parent = view.window()
+
+        # Confirm deletion
+        reply = QMessageBox.question(
+            parent,
+            "Delete Note",
+            "Are you sure you want to delete this note?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            # Delete connections first
+            if hasattr(self.scene(), "delete_connections_for_note"):
+                self.scene().delete_connections_for_note(self)
+
+            # Remove from scene
+            if self.scene():
+                self.scene().removeItem(self)
+
+            self.logger.debug(f"Deleted note {self._note_id}")

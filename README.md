@@ -55,6 +55,40 @@ A powerful, infinite canvas whiteboard application built with PyQt6, featuring a
 - **Ctrl + Shift + S**: Save as new file
 - **Ctrl + Q**: Quit application
 
+### Context Menu Features
+
+The whiteboard application includes comprehensive context menu functionality that provides quick access to common operations:
+
+#### Canvas Context Menu
+
+Right-click on empty canvas areas to access:
+
+- **📝 Create Note**: Create new notes at the clicked position
+  - **✏️ Quick Note**: Create a blank note for immediate editing
+  - **📋 From Template**: Create notes from predefined templates
+- **🔧 Canvas Operations**: Canvas-wide operations
+  - **🔲 Select All Notes**: Select all notes on the canvas
+  - **❌ Clear Selection**: Clear current selection
+  - **🔍 Reset Zoom (100%)**: Reset zoom to default level
+- **ℹ️ Canvas Info**: Display canvas information and statistics
+
+#### Context Menu Behavior
+
+The context menu intelligently adapts based on the current state:
+
+- **No Selection**: Shows all available options including "Select All Notes"
+- **Single Selection**: Provides selection-specific operations
+- **Multiple Selection**: Offers bulk operations for selected items
+- **Item-Specific**: When right-clicking on notes or connections, shows item-specific options
+
+#### Keyboard Integration
+
+Context menu operations integrate seamlessly with keyboard shortcuts:
+
+- **Ctrl + A**: Select all notes (equivalent to context menu option)
+- **Escape**: Clear selection (equivalent to context menu option)
+- **Right-click + keyboard navigation**: Navigate context menus using arrow keys
+
 ### Edit Operations
 
 - **Ctrl + Z**: Undo (when implemented)

@@ -3,9 +3,9 @@ Unit tests for canvas components (WhiteboardScene and WhiteboardCanvas).
 """
 
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from PyQt6.QtWidgets import QApplication, QGraphicsRectItem, QGraphicsEllipseItem
-from PyQt6.QtCore import QPointF, Qt
+from PyQt6.QtCore import QPointF, Qt, QRect
 
 from src.whiteboard.canvas import WhiteboardScene, WhiteboardCanvas
 
@@ -605,6 +605,210 @@ class TestWhiteboardCanvas(unittest.TestCase):
         )
         self.canvas.keyPressEvent(event)
         self.assertEqual(self.canvas.get_zoom_factor(), 1.0)
+
+    def test_context_menu_shortcuts(self):
+        """Test context menu keyboard shortcuts."""
+        from PyQt6.QtGui import QKeyEvent
+        from PyQt6.QtCore import QEvent
+        from unittest.mock import patch
+
+        # Test Delete key shortcut
+        with patch.object(
+            self.canvas, "_handle_delete_shortcut", return_value=True
+        ) as mock_delete:
+            event = QKeyEvent(
+                QEvent.Type.KeyPress, Qt.Key.Key_Delete, Qt.KeyboardModifier.NoModifier
+            )
+            self.canvas.keyPressEvent(event)
+            mock_delete.assert_called_once()
+
+        # Test Ctrl+C shortcut
+        with patch.object(
+            self.canvas, "_handle_copy_shortcut", return_value=True
+        ) as mock_copy:
+            event = QKeyEvent(
+                QEvent.Type.KeyPress, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier
+            )
+            self.canvas.keyPressEvent(event)
+            mock_copy.assert_called_once()
+
+        # Test Ctrl+A shortcut
+        with patch.object(
+            self.canvas, "_handle_select_all_shortcut", return_value=True
+        ) as mock_select_all:
+            event = QKeyEvent(
+                QEvent.Type.KeyPress, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier
+            )
+            self.canvas.keyPressEvent(event)
+            mock_select_all.assert_called_once()
+
+        # Test Ctrl+N shortcut
+        with patch.object(
+            self.canvas, "_handle_new_note_shortcut", return_value=True
+        ) as mock_new_note:
+            event = QKeyEvent(
+                QEvent.Type.KeyPress, Qt.Key.Key_N, Qt.KeyboardModifier.ControlModifier
+            )
+            self.canvas.keyPressEvent(event)
+            mock_new_note.assert_called_once()
+
+    def test_delete_shortcut_handler(self):
+        """Test delete shortcut handler functionality."""
+        from src.whiteboard.note_item import NoteItem
+        from unittest.mock import patch
+
+        # Create mock note items
+        note1 = Mock(spec=NoteItem)
+        note1._note_id = "note1"
+        note1._delete_note = Mock()
+
+        note2 = Mock(spec=NoteItem)
+        note2._note_id = "note2"
+        note2._delete_note = Mock()
+
+        # Mock scene selection
+        with patch.object(
+            self.canvas.scene(), "selectedItems", return_value=[note1, note2]
+        ):
+            with patch(
+                "PyQt6.QtWidgets.QMessageBox.question", return_value=16384
+            ):  # Yes button
+                result = self.canvas._handle_delete_shortcut()
+
+                self.assertTrue(result)
+                note1._delete_note.assert_called_once()
+                note2._delete_note.assert_called_once()
+
+    def test_copy_shortcut_handler(self):
+        """Test copy shortcut handler functionality."""
+        from src.whiteboard.note_item import NoteItem
+        from unittest.mock import patch, Mock
+
+        # Create mock note item
+        note = Mock(spec=NoteItem)
+        note._note_id = "note1"
+        note._copy_note_content = Mock()
+
+        # Test single note copy
+        with patch.object(self.canvas.scene(), "selectedItems", return_value=[note]):
+            result = self.canvas._handle_copy_shortcut()
+
+            self.assertTrue(result)
+            note._copy_note_content.assert_called_once()
+
+        # Test multiple notes copy
+        note2 = Mock(spec=NoteItem)
+        note2._note_id = "note2"
+        note2.get_text = Mock(return_value="Note 2 text")
+        note.get_text = Mock(return_value="Note 1 text")
+
+        with patch.object(
+            self.canvas.scene(), "selectedItems", return_value=[note, note2]
+        ):
+            with patch("PyQt6.QtWidgets.QApplication.clipboard") as mock_clipboard:
+                mock_clipboard_instance = Mock()
+                mock_clipboard.return_value = mock_clipboard_instance
+
+                result = self.canvas._handle_copy_shortcut()
+
+                self.assertTrue(result)
+                mock_clipboard_instance.setText.assert_called_once_with(
+                    "Note 1 text\n\nNote 2 text"
+                )
+
+    def test_select_all_shortcut_handler(self):
+        """Test select all shortcut handler functionality."""
+        from src.whiteboard.note_item import NoteItem
+        from src.whiteboard.connection_item import ConnectionItem
+        from unittest.mock import Mock
+
+        # Create mock items
+        note = Mock(spec=NoteItem)
+        note._note_id = "note1"
+        note.setSelected = Mock()
+
+        connection = Mock(spec=ConnectionItem)
+        connection._connection_id = "conn1"
+        connection.setSelected = Mock()
+
+        other_item = Mock()  # Item without _note_id or _connection_id
+
+        with patch.object(
+            self.canvas.scene(), "items", return_value=[note, connection, other_item]
+        ):
+            result = self.canvas._handle_select_all_shortcut()
+
+            self.assertTrue(result)
+            note.setSelected.assert_called_once_with(True)
+            connection.setSelected.assert_called_once_with(True)
+            # other_item.setSelected should not be called
+
+    def test_new_note_shortcut_handler(self):
+        """Test new note shortcut handler functionality."""
+        from unittest.mock import patch
+        from PyQt6.QtCore import QPointF
+
+        # Mock the canvas rect and mapToScene
+        with patch.object(self.canvas, "rect", return_value=QRect(0, 0, 800, 600)):
+            with patch.object(
+                self.canvas, "mapToScene", return_value=QPointF(400, 300)
+            ):
+                with patch.object(
+                    self.canvas, "_create_note_at_position"
+                ) as mock_create:
+                    result = self.canvas._handle_new_note_shortcut()
+
+                    self.assertTrue(result)
+                    mock_create.assert_called_once_with(QPointF(400, 300))
+
+    def test_context_menu_event_propagation(self):
+        """Test that context menu events are properly handled and propagated."""
+        from PyQt6.QtGui import QContextMenuEvent
+        from PyQt6.QtCore import QPointF, QPoint
+        from unittest.mock import patch, Mock
+
+        # Create mock context menu event
+        event = Mock(spec=QContextMenuEvent)
+        event.pos.return_value = QPoint(100, 100)  # Changed from scenePos to pos
+        event.globalPos.return_value = QPoint(200, 200)
+        event.accept = Mock()
+
+        # Mock scene and transform
+        mock_scene = Mock()
+        mock_scene.itemAt.return_value = None
+
+        # Test canvas context menu (no item at position)
+        with patch.object(self.canvas, "mapToScene", return_value=QPointF(100, 100)):
+            with patch.object(self.canvas, "transform", return_value=Mock()):
+                with patch.object(self.canvas, "scene", return_value=mock_scene):
+                    with patch("src.whiteboard.canvas.QMenu") as mock_menu_class:
+                        mock_menu = Mock()
+                        mock_menu_class.return_value = mock_menu
+                        mock_menu.exec.return_value = None
+
+                        # Mock menu structure
+                        mock_create_menu = Mock()
+                        mock_operations_menu = Mock()
+                        mock_zoom_menu = Mock()
+                        mock_action = Mock()
+
+                        mock_menu.addMenu.side_effect = [
+                            mock_create_menu,
+                            mock_operations_menu,
+                            mock_zoom_menu,
+                        ]
+                        mock_create_menu.addMenu.return_value = Mock()
+                        mock_menu.addAction.return_value = mock_action
+                        mock_create_menu.addAction.return_value = mock_action
+                        mock_operations_menu.addAction.return_value = mock_action
+                        mock_zoom_menu.addAction.return_value = mock_action
+
+                        self.canvas.contextMenuEvent(event)
+
+                        # Verify menu was created and executed
+                        mock_menu_class.assert_called_once()
+                        mock_menu.exec.assert_called_once()
+                        event.accept.assert_called_once()
 
 
 if __name__ == "__main__":
