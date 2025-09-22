@@ -9,6 +9,8 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QMessageBox,
     QApplication,
+    QLabel,
+    QGraphicsView,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QAction, QKeySequence
@@ -216,6 +218,61 @@ class MainWindow(QMainWindow):
 
         view_menu.addSeparator()
 
+        # Center on Content action
+        center_content_action = QAction("&Center on Content", self)
+        center_content_action.setShortcut(QKeySequence("Ctrl+H"))
+        center_content_action.setStatusTip("Center view on all content")
+        center_content_action.triggered.connect(self._on_center_content)
+        view_menu.addAction(center_content_action)
+
+        view_menu.addSeparator()
+
+        # Navigation submenu
+        navigation_menu = view_menu.addMenu("&Navigation")
+
+        # Pan navigation info action
+        pan_info_action = QAction("Pan Navigation Help", self)
+        pan_info_action.setStatusTip("Show pan navigation shortcuts")
+        pan_info_action.triggered.connect(self._show_pan_help)
+        navigation_menu.addAction(pan_info_action)
+
+        navigation_menu.addSeparator()
+
+        # Pan shortcuts (for display only - actual handling is in keyPressEvent)
+        pan_left_action = QAction("Pan Left", self)
+        pan_left_action.setShortcut(QKeySequence("Left"))
+        pan_left_action.setStatusTip("Pan view to the left")
+        pan_left_action.setEnabled(False)  # Display only
+        navigation_menu.addAction(pan_left_action)
+
+        pan_right_action = QAction("Pan Right", self)
+        pan_right_action.setShortcut(QKeySequence("Right"))
+        pan_right_action.setStatusTip("Pan view to the right")
+        pan_right_action.setEnabled(False)  # Display only
+        navigation_menu.addAction(pan_right_action)
+
+        pan_up_action = QAction("Pan Up", self)
+        pan_up_action.setShortcut(QKeySequence("Up"))
+        pan_up_action.setStatusTip("Pan view upward")
+        pan_up_action.setEnabled(False)  # Display only
+        navigation_menu.addAction(pan_up_action)
+
+        pan_down_action = QAction("Pan Down", self)
+        pan_down_action.setShortcut(QKeySequence("Down"))
+        pan_down_action.setStatusTip("Pan view downward")
+        pan_down_action.setEnabled(False)  # Display only
+        navigation_menu.addAction(pan_down_action)
+
+        navigation_menu.addSeparator()
+
+        space_pan_action = QAction("Space + Drag to Pan", self)
+        space_pan_action.setShortcut(QKeySequence("Space"))
+        space_pan_action.setStatusTip("Hold Space and drag to pan the view")
+        space_pan_action.setEnabled(False)  # Display only
+        navigation_menu.addAction(space_pan_action)
+
+        view_menu.addSeparator()
+
         # Fullscreen action
         fullscreen_action = QAction("&Fullscreen", self)
         fullscreen_action.setShortcut(QKeySequence("F11"))
@@ -279,10 +336,72 @@ class MainWindow(QMainWindow):
         toolbar.addAction(zoom_out_action)
 
     def _setup_status_bar(self) -> None:
-        """Create and configure the status bar."""
+        """Create and configure the status bar with enhanced zoom and position display."""
         status_bar = QStatusBar()
         status_bar.showMessage("Ready • Double-click empty area to create note")
         self.setStatusBar(status_bar)
+
+        # Add persistent zoom and position indicators on the right side
+        self._zoom_label = QLabel("Zoom: 100%")
+        self._position_label = QLabel("Position: (0.0, 0.0)")
+
+        # Style the labels for better visibility
+        label_style = """
+            QLabel {
+                background-color: rgba(240, 240, 240, 0.8);
+                border: 1px solid #ccc;
+                border-radius: 3px;
+                padding: 2px 6px;
+                font-family: monospace;
+                font-size: 11px;
+            }
+        """
+        self._zoom_label.setStyleSheet(label_style)
+        self._position_label.setStyleSheet(label_style)
+
+        # Set minimum widths for consistent display
+        self._zoom_label.setMinimumWidth(80)
+        self._position_label.setMinimumWidth(140)
+
+        # Tighten margins for compact display
+        self._zoom_label.setContentsMargins(4, 0, 4, 0)
+        self._position_label.setContentsMargins(4, 0, 4, 0)
+
+        # Add labels to status bar (position first, then zoom)
+        status_bar.addPermanentWidget(self._position_label)
+        status_bar.addPermanentWidget(self._zoom_label)
+
+        # Initialize labels with actual values
+        try:
+            current_zoom = self._canvas.get_zoom_factor() * 100
+            center_point = self._canvas.get_center_point()
+            self._update_zoom_display(current_zoom)
+            self._update_position_display(center_point)
+            self.logger.debug(
+                f"Enhanced status bar initialized with zoom={current_zoom:.1f}% and center=({center_point.x():.1f}, {center_point.y():.1f})"
+            )
+        except Exception as e:
+            self.logger.error(
+                f"Failed to initialize enhanced status bar indicators: {e}"
+            )
+
+    def _update_zoom_display(self, zoom_factor: float) -> None:
+        """Update zoom display with enhanced formatting."""
+        if self._zoom_label is not None:
+            # Format zoom with appropriate precision
+            if zoom_factor >= 100:
+                zoom_text = f"Zoom: {zoom_factor:.0f}%"
+            else:
+                zoom_text = f"Zoom: {zoom_factor:.1f}%"
+            self._zoom_label.setText(zoom_text)
+            self.logger.debug(f"Zoom display updated to {zoom_text}")
+
+    def _update_position_display(self, center_point) -> None:
+        """Update position display with enhanced formatting."""
+        if self._position_label is not None:
+            pos_text = f"Position: ({center_point.x():.0f}, {center_point.y():.0f})"
+            self._position_label.setText(pos_text)
+            self.logger.debug(f"Position display updated to {pos_text}")
 
     def _setup_session_connections(self) -> None:
         """Set up session manager signal connections."""
@@ -307,15 +426,25 @@ class MainWindow(QMainWindow):
         self._scene.changed.connect(self._on_scene_changed)
 
     def _on_zoom_changed(self, zoom_factor: float) -> None:
-        """Handle zoom level changes."""
-        zoom_percent = int(zoom_factor * 100)
-        self.statusBar().showMessage(f"Zoom: {zoom_percent}%")
-        self.logger.debug(f"Zoom changed to {zoom_percent}%")
+        """Handle zoom level changes with enhanced status bar updates."""
+        zoom_percent = zoom_factor * 100
+        self._update_zoom_display(zoom_percent)
+
+        # Also refresh position to reflect any center shift on zoom
+        try:
+            center_point = self._canvas.get_center_point()
+            self._update_position_display(center_point)
+        except Exception as e:
+            self.logger.error(f"Failed to update position on zoom change: {e}")
+
+        self.logger.debug(f"Zoom changed to {zoom_percent:.1f}%")
 
     def _on_pan_changed(self, center_point) -> None:
-        """Handle pan position changes."""
-        # Update status bar with position info if needed
-        pass
+        """Handle pan position changes with enhanced status bar updates."""
+        self._update_position_display(center_point)
+        self.logger.debug(
+            f"Pan changed, center at ({center_point.x():.0f}, {center_point.y():.0f})"
+        )
 
     def _on_note_created(self, note) -> None:
         """Handle note creation events."""
@@ -328,11 +457,8 @@ class MainWindow(QMainWindow):
 
     def _on_note_hover_ended(self) -> None:
         """Handle note hover end events."""
-        # Show default zoom info or ready message
-        zoom_percent = int(self._canvas.get_zoom_factor() * 100)
-        self.statusBar().showMessage(
-            f"Zoom: {zoom_percent}% • Double-click empty area to create note"
-        )
+        # Return to the default hint message; zoom/position are persistent labels now
+        self.statusBar().showMessage("Double-click empty area to create note")
 
     def toggle_fullscreen(self) -> None:
         """
@@ -366,11 +492,41 @@ class MainWindow(QMainWindow):
 
     def keyPressEvent(self, event):
         """Handle key press events."""
+        key = event.key()
+        modifiers = event.modifiers()
+
         # F11 for fullscreen toggle
-        if event.key() == Qt.Key.Key_F11:
+        if key == Qt.Key.Key_F11:
             self.toggle_fullscreen()
-        else:
-            super().keyPressEvent(event)
+            return
+
+        # Handle arrow keys for pan navigation
+        if key in [Qt.Key.Key_Left, Qt.Key.Key_Right, Qt.Key.Key_Up, Qt.Key.Key_Down]:
+            # Forward arrow keys to canvas for pan navigation
+            self._canvas.keyPressEvent(event)
+            return
+
+        # Handle space key for pan mode activation
+        if key == Qt.Key.Key_Space and not modifiers:
+            # Enable space+drag pan mode in canvas
+            self._canvas.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+            self.logger.debug("Space key pressed - pan mode activated")
+            return
+
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        """Handle key release events."""
+        key = event.key()
+
+        # Handle space key release to exit pan mode
+        if key == Qt.Key.Key_Space:
+            # Restore normal drag mode
+            self._canvas.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
+            self.logger.debug("Space key released - pan mode deactivated")
+            return
+
+        super().keyReleaseEvent(event)
 
     def closeEvent(self, event):
         """Handle window close event."""
@@ -590,6 +746,34 @@ class MainWindow(QMainWindow):
         self.logger.info("Fit to Window action triggered")
         self._canvas.fit_content_in_view()
 
+    def _on_center_content(self) -> None:
+        """Handle Center on Content action."""
+        self.logger.info("Center on Content action triggered")
+        self._canvas.center_on_content()
+
+    def _show_pan_help(self) -> None:
+        """Show pan navigation help dialog."""
+        help_text = """Pan Navigation Shortcuts:
+
+🔹 Arrow Keys: Pan in the corresponding direction
+   • ← Left Arrow: Pan left
+   • → Right Arrow: Pan right
+   • ↑ Up Arrow: Pan up
+   • ↓ Down Arrow: Pan down
+
+🔹 Space + Drag: Hold Space key and drag with mouse to pan freely
+
+🔹 Middle Mouse Button: Click and drag to pan
+
+🔹 Shift + Left Click: Alternative pan mode
+
+🔹 Ctrl+H: Center view on all content
+
+These shortcuts work when the canvas has focus."""
+
+        QMessageBox.information(self, "Pan Navigation Help", help_text)
+        self.logger.debug("Pan navigation help dialog shown")
+
     def _on_scene_changed(self) -> None:
         """Handle scene modification for auto-save tracking."""
         self._scene_modified = True
@@ -621,37 +805,39 @@ class MainWindow(QMainWindow):
             self._session_manager.save_session_to_file(
                 session_data, self._current_file_path
             )
-            self._scene_modified = False
-            self._auto_save_timer.stop()
 
-            # Show success indicator
+            # Reset modified flag
+            self._scene_modified = False
+
+            # Update status message
             self.statusBar().showMessage("Auto-saved successfully", 2000)
-            self.logger.debug("Auto-save completed successfully")
+            self.logger.info("Auto-save completed successfully")
         except SessionError as e:
             self.logger.warning(f"Auto-save failed: {e}")
-            # Show error notification to user
             self.statusBar().showMessage(f"Auto-save failed: {e}", 5000)
         except Exception as e:
             self.logger.error(f"Unexpected error during auto-save: {e}")
-            # Show generic error notification
-            self.statusBar().showMessage("Auto-save failed: Unexpected error", 5000)
+            self.statusBar().showMessage(f"Auto-save failed: {e}", 5000)
 
     def start_auto_save(self) -> None:
-        """Enable auto-save functionality."""
+        """Start the auto-save timer if enabled."""
         self._auto_save_enabled = True
-        self.logger.info("Auto-save enabled")
+        if self._auto_save_enabled and self._current_file_path:
+            self._auto_save_timer.start(self._auto_save_interval)
+            self.logger.info(
+                f"Auto-save started with interval {self._auto_save_interval} ms"
+            )
 
     def stop_auto_save(self) -> None:
-        """Disable auto-save functionality."""
+        """Stop the auto-save timer."""
         self._auto_save_enabled = False
         self._auto_save_timer.stop()
-        self.logger.info("Auto-save disabled")
+        self.logger.info("Auto-save stopped")
 
     def set_auto_save_interval(self, interval_ms: int) -> None:
         """Set the auto-save interval in milliseconds."""
         self._auto_save_interval = interval_ms
-        self.logger.info(f"Auto-save interval set to {interval_ms}ms")
-
-        # Restart timer with new interval if it's running
+        # If timer is currently active, restart it with new interval
         if self._auto_save_timer.isActive():
-            self._auto_save_timer.start(self._auto_save_interval)
+            self._auto_save_timer.start(interval_ms)
+        self.logger.info(f"Auto-save interval set to {interval_ms} ms")

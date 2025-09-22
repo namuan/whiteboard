@@ -140,11 +140,25 @@ class WhiteboardScene(QGraphicsScene):
 
         # Calculate union of all item bounds
         content_rect = QRectF()
+        valid_items = []
+
         for item in self._tracked_items:
-            if content_rect.isNull():
-                content_rect = item.sceneBoundingRect()
-            else:
-                content_rect = content_rect.united(item.sceneBoundingRect())
+            try:
+                # Check if the item is still valid (not deleted)
+                item_rect = item.sceneBoundingRect()
+                valid_items.append(item)
+
+                if content_rect.isNull():
+                    content_rect = item_rect
+                else:
+                    content_rect = content_rect.united(item_rect)
+            except RuntimeError:
+                # Item has been deleted, skip it
+                self.logger.debug(f"Skipping deleted item: {type(item).__name__}")
+                continue
+
+        # Update tracked items to remove any deleted ones
+        self._tracked_items = valid_items
 
         return content_rect
 
@@ -295,18 +309,40 @@ class WhiteboardCanvas(QGraphicsView):
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         """
-        Handle mouse wheel events for zooming.
+        Handle mouse wheel events for zooming with zoom-to-cursor functionality.
 
         Args:
             event: Wheel event containing scroll information
         """
         # Check if Ctrl is pressed for zoom, otherwise scroll
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            # Get mouse position in view coordinates
+            mouse_pos = event.position()
+
+            # Get the scene point under the mouse before zooming
+            scene_pos = self.mapToScene(mouse_pos.toPoint())
+
+            # Store the current zoom factor
+            old_zoom = self._zoom_factor
+
             # Zoom in/out based on wheel direction
             if event.angleDelta().y() > 0:
                 self.zoom_in()
             else:
                 self.zoom_out()
+
+            # Calculate the new scene position under the mouse after zooming
+            new_scene_pos = self.mapToScene(mouse_pos.toPoint())
+
+            # Calculate the difference and adjust the view to keep the scene point under the cursor
+            delta = new_scene_pos - scene_pos
+
+            # Pan the view to compensate for the zoom shift
+            self.pan(-delta.x(), -delta.y())
+
+            self.logger.debug(
+                f"Zoom-to-cursor: old_zoom={old_zoom:.2f}, new_zoom={self._zoom_factor:.2f}, scene_pos=({scene_pos.x():.1f}, {scene_pos.y():.1f})"
+            )
         else:
             # Default scroll behavior
             super().wheelEvent(event)
@@ -529,7 +565,7 @@ class WhiteboardCanvas(QGraphicsView):
 
     def _handle_pan_shortcuts(self, key: int) -> bool:
         """
-        Handle pan-related keyboard shortcuts.
+        Handle pan-related keyboard shortcuts with enhanced user experience.
 
         Args:
             key: Key code
@@ -537,19 +573,34 @@ class WhiteboardCanvas(QGraphicsView):
         Returns:
             True if shortcut was handled, False otherwise
         """
-        pan_distance = 50
+        # Adaptive pan distance based on zoom level for better UX
+        base_pan_distance = 50
+        zoom_adjusted_distance = base_pan_distance / max(self._zoom_factor, 0.1)
+        pan_distance = max(20, min(zoom_adjusted_distance, 200))  # Clamp between 20-200
 
         if key == Qt.Key.Key_Left:
             self.pan(-pan_distance, 0)
+            self.logger.debug(
+                f"Pan left by {pan_distance:.1f} pixels (zoom: {self._zoom_factor:.2f})"
+            )
             return True
         elif key == Qt.Key.Key_Right:
             self.pan(pan_distance, 0)
+            self.logger.debug(
+                f"Pan right by {pan_distance:.1f} pixels (zoom: {self._zoom_factor:.2f})"
+            )
             return True
         elif key == Qt.Key.Key_Up:
             self.pan(0, -pan_distance)
+            self.logger.debug(
+                f"Pan up by {pan_distance:.1f} pixels (zoom: {self._zoom_factor:.2f})"
+            )
             return True
         elif key == Qt.Key.Key_Down:
             self.pan(0, pan_distance)
+            self.logger.debug(
+                f"Pan down by {pan_distance:.1f} pixels (zoom: {self._zoom_factor:.2f})"
+            )
             return True
 
         return False
@@ -571,38 +622,65 @@ class WhiteboardCanvas(QGraphicsView):
         return False
 
     def zoom_in(self) -> None:
-        """Zoom in on the canvas."""
+        """Zoom in on the canvas with enhanced user experience."""
+        old_zoom = self._zoom_factor
         new_zoom = min(self._zoom_factor * self._zoom_step, self._max_zoom)
-        self._set_zoom(new_zoom)
+
+        if new_zoom != old_zoom:
+            self._set_zoom(new_zoom)
+            self.logger.info(f"Zoomed in from {old_zoom:.1f}x to {new_zoom:.1f}x")
+        else:
+            self.logger.debug(f"Maximum zoom level reached: {self._max_zoom:.1f}x")
 
     def zoom_out(self) -> None:
-        """Zoom out on the canvas."""
+        """Zoom out on the canvas with enhanced user experience."""
+        old_zoom = self._zoom_factor
         new_zoom = max(self._zoom_factor / self._zoom_step, self._min_zoom)
-        self._set_zoom(new_zoom)
+
+        if new_zoom != old_zoom:
+            self._set_zoom(new_zoom)
+            self.logger.info(f"Zoomed out from {old_zoom:.1f}x to {new_zoom:.1f}x")
+        else:
+            self.logger.debug(f"Minimum zoom level reached: {self._min_zoom:.1f}x")
 
     def reset_zoom(self) -> None:
-        """Reset zoom to 100% (1.0)."""
+        """Reset zoom to 100% (1.0) with enhanced feedback."""
+        old_zoom = self._zoom_factor
         self._set_zoom(1.0)
+        self.logger.info(f"Zoom reset from {old_zoom:.1f}x to 1.0x (100%)")
 
     def set_zoom(self, zoom_factor: float) -> None:
         """
-        Set specific zoom level.
+        Set specific zoom level with enhanced validation and feedback.
 
         Args:
             zoom_factor: Zoom level (1.0 = 100%)
         """
+        old_zoom = self._zoom_factor
         clamped_zoom = max(self._min_zoom, min(zoom_factor, self._max_zoom))
+
+        if clamped_zoom != zoom_factor:
+            self.logger.debug(
+                f"Zoom factor {zoom_factor:.2f} clamped to {clamped_zoom:.2f}"
+            )
+
         self._set_zoom(clamped_zoom)
+
+        if clamped_zoom != old_zoom:
+            self.logger.info(f"Zoom set from {old_zoom:.1f}x to {clamped_zoom:.1f}x")
 
     def _set_zoom(self, zoom_factor: float) -> None:
         """
-        Internal method to apply zoom transformation.
+        Internal method to apply zoom transformation with enhanced precision.
 
         Args:
             zoom_factor: Target zoom level
         """
-        if zoom_factor == self._zoom_factor:
+        if abs(zoom_factor - self._zoom_factor) < 0.001:  # More precise comparison
             return
+
+        # Store center point before zoom for better user experience
+        center_before = self.mapToScene(self.rect().center())
 
         # Calculate scale factor relative to current zoom
         scale_factor = zoom_factor / self._zoom_factor
@@ -613,14 +691,24 @@ class WhiteboardCanvas(QGraphicsView):
         # Update zoom factor
         self._zoom_factor = zoom_factor
 
+        # Maintain center point after zoom for consistent experience
+        center_after = self.mapToScene(self.rect().center())
+        delta = center_after - center_before
+        if not (
+            abs(delta.x()) < 1 and abs(delta.y()) < 1
+        ):  # Only adjust if significant drift
+            self.pan(-delta.x(), -delta.y())
+
         # Emit zoom changed signal
         self.zoom_changed.emit(self._zoom_factor)
 
-        self.logger.debug(f"Zoom set to {self._zoom_factor:.2f}")
+        self.logger.debug(
+            f"Zoom applied: {self._zoom_factor:.3f}x (scale factor: {scale_factor:.3f})"
+        )
 
     def pan(self, dx: float, dy: float) -> None:
         """
-        Pan the view by specified amounts.
+        Pan the view by specified amounts with enhanced bounds checking.
 
         Args:
             dx: Horizontal pan distance in pixels
@@ -629,36 +717,75 @@ class WhiteboardCanvas(QGraphicsView):
         h_bar = self.horizontalScrollBar()
         v_bar = self.verticalScrollBar()
 
-        h_bar.setValue(h_bar.value() + int(dx))
-        v_bar.setValue(v_bar.value() + int(dy))
+        # Store old values for logging
+        old_h = h_bar.value()
+        old_v = v_bar.value()
+
+        # Apply pan with bounds checking
+        new_h = max(h_bar.minimum(), min(h_bar.value() + int(dx), h_bar.maximum()))
+        new_v = max(v_bar.minimum(), min(v_bar.value() + int(dy), v_bar.maximum()))
+
+        h_bar.setValue(new_h)
+        v_bar.setValue(new_v)
+
+        # Log actual pan distance
+        actual_dx = new_h - old_h
+        actual_dy = new_v - old_v
+
+        if actual_dx != 0 or actual_dy != 0:
+            self.logger.debug(
+                f"Pan applied: dx={actual_dx}, dy={actual_dy} (requested: dx={dx:.1f}, dy={dy:.1f})"
+            )
 
         # Emit pan changed signal
-        self.pan_changed.emit(self.mapToScene(self.rect().center()))
+        center_point = self.mapToScene(self.rect().center())
+        self.pan_changed.emit(center_point)
 
     def center_on_content(self) -> None:
-        """Center the view on all content in the scene."""
+        """Center the view on all content in the scene with enhanced feedback."""
         content_center = self._scene.center_on_content()
+        old_center = self.mapToScene(self.rect().center())
+
         self.centerOn(content_center)
         self.pan_changed.emit(content_center)
-        self.logger.debug(f"Centered on content at {content_center}")
+
+        # Calculate distance moved for user feedback
+        distance = (
+            (content_center.x() - old_center.x()) ** 2
+            + (content_center.y() - old_center.y()) ** 2
+        ) ** 0.5
+        self.logger.info(
+            f"Centered on content at ({content_center.x():.0f}, {content_center.y():.0f}), moved {distance:.0f} pixels"
+        )
 
     def fit_content_in_view(self) -> None:
-        """Fit all content to be visible in the current view."""
+        """Fit all content to be visible in the current view with enhanced feedback."""
         content_bounds = self._scene.get_content_bounds()
-        if not content_bounds.isNull():
-            # Add some margin around content
-            margin = 50
-            content_bounds.adjust(-margin, -margin, margin, margin)
+        if content_bounds.isNull():
+            self.logger.info("No content to fit in view")
+            return
 
-            # Fit the content bounds in view
-            self.fitInView(content_bounds, Qt.AspectRatioMode.KeepAspectRatio)
+        old_zoom = self._zoom_factor
 
-            # Update zoom factor based on transformation
-            transform = self.transform()
-            self._zoom_factor = transform.m11()  # Get scale factor
+        # Add adaptive margin based on content size
+        content_size = max(content_bounds.width(), content_bounds.height())
+        margin = max(
+            20, min(content_size * 0.1, 100)
+        )  # 10% of content size, clamped 20-100
+        content_bounds.adjust(-margin, -margin, margin, margin)
 
-            self.zoom_changed.emit(self._zoom_factor)
-            self.logger.debug("Fitted content in view")
+        # Fit the content bounds in view
+        self.fitInView(content_bounds, Qt.AspectRatioMode.KeepAspectRatio)
+
+        # Update zoom factor based on transformation
+        transform = self.transform()
+        self._zoom_factor = max(self._min_zoom, min(transform.m11(), self._max_zoom))
+
+        # Emit zoom changed signal and log the change
+        self.zoom_changed.emit(self._zoom_factor)
+        self.logger.info(
+            f"Fitted content in view: zoom changed from {old_zoom:.2f}x to {self._zoom_factor:.2f}x"
+        )
 
     def get_zoom_factor(self) -> float:
         """
