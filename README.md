@@ -2,6 +2,8 @@
 
 A powerful, infinite canvas whiteboard application built with PyQt6, featuring advanced zoom and navigation capabilities, note management, and session persistence.
 
+![](assets/screenshot.png)
+
 ## Features
 
 ### Core Functionality

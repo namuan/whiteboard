@@ -901,6 +901,45 @@ class ImageItem(QGraphicsPixmapItem):
             self._load_image(self._image_path)
             self.logger.info(f"Reloaded image for ImageItem {self._image_id}")
 
+    def _toggle_aspect_ratio(self) -> None:
+        """Toggle the aspect ratio lock for this image."""
+        self._style["maintain_aspect_ratio"] = not self._style["maintain_aspect_ratio"]
+
+        # Update resize handles to reflect the new aspect ratio setting
+        self._apply_styling()
+        self.signals.style_changed.emit(self._style.copy())
+
+        # Provide user feedback
+        status = "locked" if self._style["maintain_aspect_ratio"] else "unlocked"
+        self.signals.hover_started.emit(f"🔒 Aspect ratio {status}")
+        self.logger.info(f"Aspect ratio {status} for ImageItem {self._image_id}")
+
+    def _reset_to_original_size(self) -> None:
+        """Reset image to its original size from the loaded pixmap."""
+        if hasattr(self, "_original_pixmap") and not self._original_pixmap.isNull():
+            original_size = self._original_pixmap.size()
+
+            # Reset scale factor to 1.0 (original size)
+            self._scale_factor = 1.0
+
+            # Update style to match original dimensions
+            self._style["max_width"] = original_size.width()
+            self._style["max_height"] = original_size.height()
+
+            # Apply the changes
+            self._scale_image()
+            self._apply_styling()
+            self.signals.style_changed.emit(self._style.copy())
+
+            self.signals.hover_started.emit("↩️ Reset to original size")
+            self.logger.info(
+                f"Reset ImageItem {self._image_id} to original size: {original_size}"
+            )
+        else:
+            self.logger.warning(
+                f"Cannot reset ImageItem {self._image_id} - no original pixmap available"
+            )
+
     def _reset_size(self) -> None:
         """Reset image to its original size constraints."""
         self._style["max_width"] = 400
