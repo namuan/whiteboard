@@ -685,7 +685,8 @@ class ImageItem(QGraphicsPixmapItem):
         # Delete action
         delete_action = menu.addAction("🗑️ Delete Image")
         delete_action.setShortcut(QKeySequence.StandardKey.Delete)
-        delete_action.triggered.connect(self._delete_image)
+        # Route to centralized deletion on canvas
+        delete_action.triggered.connect(lambda: self._request_centralized_delete())
 
         # Show menu at cursor position
         menu.exec(event.screenPos())
@@ -984,34 +985,16 @@ class ImageItem(QGraphicsPixmapItem):
         self.logger.debug(f"Copied path of ImageItem {self._image_id} to clipboard")
 
     def _delete_image(self) -> None:
-        """Delete this image from the scene."""
-        from PyQt6.QtWidgets import QMessageBox
+        """Delete this image from the scene without prompting (centralized confirmation is handled by Canvas)."""
+        # Delete connections first
+        if hasattr(self.scene(), "delete_connections_for_item"):
+            self.scene().delete_connections_for_item(self)
 
-        # Get parent window for dialog
-        parent = None
-        if self.scene() and self.scene().views():
-            view = self.scene().views()[0]
-            parent = view.window()
+        # Remove from scene
+        if self.scene():
+            self.scene().removeItem(self)
 
-        # Confirm deletion
-        reply = QMessageBox.question(
-            parent,
-            "Delete Image",
-            "Are you sure you want to delete this image?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-
-        if reply == QMessageBox.StandardButton.Yes:
-            # Delete connections first
-            if hasattr(self.scene(), "delete_connections_for_item"):
-                self.scene().delete_connections_for_item(self)
-
-            # Remove from scene
-            if self.scene():
-                self.scene().removeItem(self)
-
-            self.logger.debug(f"Deleted ImageItem {self._image_id} with confirmation")
+        self.logger.debug(f"Deleted ImageItem {self._image_id} (no per-item prompt)")
 
     def _set_opacity(self, opacity: float) -> None:
         """Set the opacity of the image."""
@@ -1063,6 +1046,191 @@ class ImageItem(QGraphicsPixmapItem):
         )
 
         return scene_points
+
+    def _show_custom_opacity_dialog(self) -> None:
+        """Show dialog for custom opacity adjustment."""
+        from PyQt6.QtWidgets import QInputDialog
+
+        # Get parent window for dialog
+        parent = None
+        if self.scene() and self.scene().views():
+            view = self.scene().views()[0]
+            parent = view.window()
+
+        current_opacity = int(self._style["opacity"] * 100)
+        opacity, ok = QInputDialog.getInt(
+            parent,
+            "Custom Opacity",
+            "Enter opacity percentage (0-100):",
+            current_opacity,
+            0,
+            100,
+            1,
+        )
+
+        if ok:
+            self._set_opacity(opacity / 100.0)
+
+    def _show_custom_rotation_dialog(self) -> None:
+        """Show dialog for custom rotation angle."""
+        from PyQt6.QtWidgets import QInputDialog
+
+        # Get parent window for dialog
+        parent = None
+        if self.scene() and self.scene().views():
+            view = self.scene().views()[0]
+            parent = view.window()
+
+        angle, ok = QInputDialog.getDouble(
+            parent,
+            "Custom Rotation",
+            "Enter rotation angle in degrees:",
+            0.0,
+            -360.0,
+            360.0,
+            1,
+        )
+
+        if ok:
+            self._rotate_image(angle)
+            self.signals.hover_started.emit(f"🔄 Rotated by {angle}°")
+
+    def _request_centralized_delete(self) -> None:
+        """Ask the canvas to delete this image via centralized confirmation dialog."""
+        try:
+            if self.scene() and self.scene().views():
+                view = self.scene().views()[0]
+                canvas = getattr(view, "_canvas", None)
+                if canvas and hasattr(canvas, "delete_items_with_confirmation"):
+                    canvas.delete_items_with_confirmation([self])
+                    return
+        except Exception as e:
+            self.logger.error(f"Failed to route image deletion to canvas: {e}")
+        # Fallback to legacy behavior
+        self._delete_image()
+
+    def _bring_to_front(self) -> None:
+        """Bring this image to the front (highest z-value)."""
+        if self.scene():
+            # Find the highest z-value among all items
+            max_z = 0
+            for item in self.scene().items():
+                if item != self:
+                    max_z = max(max_z, item.zValue())
+
+            # Set this item's z-value to be higher
+            self.setZValue(max_z + 1)
+
+            # Update resize handle Z-order to be above this item
+            for handle in self._resize_handles:
+                handle.setZValue(self.zValue() + 1)
+
+            self.signals.hover_started.emit("🔝 Brought to front")
+            self.logger.debug(
+                f"ImageItem {self._image_id} brought to front with z-value {max_z + 1}"
+            )
+
+    def _send_to_back(self) -> None:
+        """Send this image to the back (lowest z-value)."""
+        if self.scene():
+            # Find the lowest z-value among all items
+            min_z = 0
+            for item in self.scene().items():
+                if item != self:
+                    min_z = min(min_z, item.zValue())
+
+            # Set this item's z-value to be lower
+            self.setZValue(min_z - 1)
+
+            self.signals.hover_started.emit("🔻 Sent to back")
+            self.logger.debug(
+                f"ImageItem {self._image_id} sent to back with z-value {min_z - 1}"
+            )
+
+    def _show_move_help(self) -> None:
+        """Show help information about moving images."""
+        help_text = "💡 To move images: Hover over an image and drag it to a new position. The cursor will change to indicate you can move the image."
+        self.signals.hover_started.emit(help_text)
+        self.logger.debug(f"ImageItem {self._image_id} move help shown")
+
+    # Context menu action methods
+    def _reload_image(self) -> None:
+        """Reload the image from its file path."""
+        if self._image_path:
+            self._load_image(self._image_path)
+            self.logger.info(f"Reloaded image for ImageItem {self._image_id}")
+
+    def _toggle_aspect_ratio(self) -> None:
+        """Toggle the aspect ratio lock for this image."""
+        self._style["maintain_aspect_ratio"] = not self._style["maintain_aspect_ratio"]
+
+        # Update resize handles to reflect the new aspect ratio setting
+        self._apply_styling()
+        self.signals.style_changed.emit(self._style.copy())
+
+        # Provide user feedback
+        status = "locked" if self._style["maintain_aspect_ratio"] else "unlocked"
+        self.signals.hover_started.emit(f"🔒 Aspect ratio {status}")
+        self.logger.info(f"Aspect ratio {status} for ImageItem {self._image_id}")
+
+    def _reset_to_original_size(self) -> None:
+        """Reset image to its original size from the loaded pixmap."""
+        if hasattr(self, "_original_pixmap") and not self._original_pixmap.isNull():
+            original_size = self._original_pixmap.size()
+
+            # Reset scale factor to 1.0 (original size)
+            self._scale_factor = 1.0
+
+            # Update style to match original dimensions
+            self._style["max_width"] = original_size.width()
+            self._style["max_height"] = original_size.height()
+
+            # Apply the changes
+            self._scale_image()
+            self._apply_styling()
+            self.signals.style_changed.emit(self._style.copy())
+
+            self.signals.hover_started.emit("↩️ Reset to original size")
+            self.logger.info(
+                f"Reset ImageItem {self._image_id} to original size: {original_size}"
+            )
+        else:
+            self.logger.warning(
+                f"Cannot reset ImageItem {self._image_id} - no original pixmap available"
+            )
+
+    def _reset_size(self) -> None:
+        """Reset image to its original size constraints."""
+        self._style["max_width"] = 400
+        self._style["max_height"] = 300
+        self._scale_image()
+        self._apply_styling()
+        self.signals.style_changed.emit(self._style.copy())
+        self.logger.info(f"Reset size for ImageItem {self._image_id}")
+
+    def _change_border_color(self) -> None:
+        """Change the border color of the image."""
+        # TODO: Implement color picker dialog
+        # For now, cycle through some predefined colors
+        colors = [
+            QColor(100, 100, 100),  # Gray
+            QColor(255, 0, 0),  # Red
+            QColor(0, 255, 0),  # Green
+            QColor(0, 0, 255),  # Blue
+            QColor(255, 255, 0),  # Yellow
+        ]
+
+        current_color = self._style["border_color"]
+        try:
+            current_index = colors.index(current_color)
+            new_index = (current_index + 1) % len(colors)
+        except ValueError:
+            new_index = 0
+
+        self._style["border_color"] = colors[new_index]
+        self._apply_styling()
+        self.signals.style_changed.emit(self._style.copy())
+        self.logger.info(f"Changed border color for ImageItem {self._image_id}")
 
     def _show_custom_opacity_dialog(self) -> None:
         """Show dialog for custom opacity adjustment."""

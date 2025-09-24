@@ -606,7 +606,8 @@ class ConnectionItem(QGraphicsPathItem):
         # Delete connection
         delete_action = menu.addAction("🗑️ Delete Connection")
         delete_action.setShortcut(QKeySequence.StandardKey.Delete)
-        delete_action.triggered.connect(self.delete_connection)
+        # Route to centralized deletion on canvas
+        delete_action.triggered.connect(lambda: self._request_centralized_delete())
 
         menu.addSeparator()
 
@@ -854,3 +855,17 @@ class ConnectionItem(QGraphicsPathItem):
             self.logger.debug(
                 f"_disconnect_note_signals encountered non-fatal issue: {e}"
             )
+
+    def _request_centralized_delete(self) -> None:
+        """Ask the canvas to delete this connection via centralized confirmation dialog."""
+        try:
+            if self.scene() and self.scene().views():
+                view = self.scene().views()[0]
+                canvas = getattr(view, "_canvas", None)
+                if canvas and hasattr(canvas, "delete_items_with_confirmation"):
+                    canvas.delete_items_with_confirmation([self])
+                    return
+        except Exception as e:
+            self.logger.error(f"Failed to route connection deletion to canvas: {e}")
+        # Fallback: direct delete without extra dialog
+        self.delete_connection()

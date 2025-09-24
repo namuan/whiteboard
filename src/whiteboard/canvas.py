@@ -564,6 +564,27 @@ class WhiteboardCanvas(QGraphicsView):
         key = event.key()
         modifiers = event.modifiers()
 
+        # If a NoteItem is focused and currently in edit mode, route key events to it.
+        # This prevents the canvas from hijacking arrow keys (pan) and other shortcuts
+        # like Backspace/Delete/Ctrl+C that should operate within the text editor.
+        focused_item = self.scene().focusItem() if self.scene() is not None else None
+        if isinstance(focused_item, NoteItem):
+            try:
+                in_edit = focused_item.is_editing()
+            except Exception as exc:
+                in_edit = False
+                self.logger.warning(
+                    f"Failed to query is_editing() on focused NoteItem: {exc}"
+                )
+            if in_edit:
+                self.logger.debug(
+                    f"Key press routed to NoteItem in edit mode; skipping canvas shortcuts "
+                    f"(key={key}, modifiers={modifiers})"
+                )
+                # Let base class dispatch to the focused graphics item
+                super().keyPressEvent(event)
+                return
+
         # Handle context menu shortcuts
         if self._handle_context_menu_shortcuts(key, modifiers):
             return
@@ -644,43 +665,159 @@ class WhiteboardCanvas(QGraphicsView):
         if not selected_items:
             return False
 
-        from PyQt6.QtWidgets import QMessageBox
+        # Delegate to centralized deletion with single confirmation
+        return self.delete_items_with_confirmation(selected_items)
 
-        # Get parent window for dialog
-        parent = self.window()
+    def delete_items_with_confirmation(self, items: list) -> bool:
+        """Centralize deletion flow with a single warning dialog.
 
-        # Confirm deletion
-        item_count = len(selected_items)
-        item_types = []
-        for item in selected_items:
-            if hasattr(item, "_note_id"):
-                item_types.append("note")
-            elif hasattr(item, "_connection_id"):
-                item_types.append("connection")
+        Shows one warning dialog summarizing the deletion, then performs
+        deletions for supported item types.
 
-        if not item_types:
+        Args:
+            items: Selected items to delete
+
+        Returns:
+            True if handled (deleted or canceled), False otherwise
+        """
+        if not items:
+            self.logger.debug("delete_items_with_confirmation called with no items")
             return False
 
-        type_summary = ", ".join(set(item_types))
+        parent = self.window()
+
+        # Collect deletable items by type
+        notes, connections, images = self._collect_deletable_items(items)
+        if not (notes or connections or images):
+            self.logger.debug("No deletable items in selection for centralized delete")
+            return False
+
+        total_count, summary = self._build_deletion_summary(notes, connections, images)
+        self.logger.debug(
+            f"Centralized delete confirmation for {total_count} item(s): {summary}"
+        )
+
+        if not self._confirm_centralized_deletion(parent, summary, total_count):
+            self.logger.debug("Centralized delete canceled by user")
+            return True  # handled
+
+        # Perform deletions
+        deleted_connections = self._delete_connections(connections)
+        deleted_notes = self._delete_notes(notes)
+        deleted_images = self._delete_images(images)
+
+        self.logger.info(
+            "Centralized delete completed: %d notes, %d connections, %d images",
+            deleted_notes,
+            deleted_connections,
+            deleted_images,
+        )
+        return True
+
+    # ---- Centralized deletion helpers (reduced complexity) ----
+    def _collect_deletable_items(self, items: list) -> tuple[list, list, list]:
+        """Partition items into deletable categories with clear logging."""
+        notes = [it for it in items if hasattr(it, "_note_id")]
+        connections = [it for it in items if hasattr(it, "_connection_id")]
+        images = [it for it in items if hasattr(it, "_image_id")]
+        self.logger.debug(
+            "Partitioned selection into %d note(s), %d connection(s), %d image(s)",
+            len(notes),
+            len(connections),
+            len(images),
+        )
+        return notes, connections, images
+
+    def _build_deletion_summary(
+        self, notes: list, connections: list, images: list
+    ) -> tuple[int, str]:
+        """Build a human-readable summary string and count."""
+        parts: list[str] = []
+        if notes:
+            parts.append(f"{len(notes)} note(s)")
+        if connections:
+            parts.append(f"{len(connections)} connection(s)")
+        if images:
+            parts.append(f"{len(images)} image(s)")
+        summary = ", ".join(parts)
+        total_count = len(notes) + len(connections) + len(images)
+        return total_count, summary
+
+    def _confirm_centralized_deletion(
+        self, parent, summary: str, total_count: int
+    ) -> bool:
+        """Show a single confirmation dialog for deletion and return user's choice."""
+        from PyQt6.QtWidgets import QMessageBox
+
+        message = (
+            f"Are you sure you want to delete {summary}? This action cannot be undone."
+        )
+        self.logger.debug(
+            "Showing centralized delete dialog for %d item(s): %s",
+            total_count,
+            summary,
+        )
         reply = QMessageBox.question(
             parent,
-            "Delete Items",
-            f"Are you sure you want to delete {item_count} {type_summary}(s)?",
+            "Delete Selected Items",
+            message,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
+        return reply == QMessageBox.StandardButton.Yes
 
-        if reply == QMessageBox.StandardButton.Yes:
-            for item in selected_items:
-                if hasattr(item, "_delete_note"):
-                    item._delete_note()
-                elif hasattr(item, "delete_connection"):
-                    item.delete_connection()
+    def _delete_connections(self, connections: list) -> int:
+        """Delete connection items safely with logging."""
+        deleted = 0
+        for conn in connections:
+            try:
+                conn.delete_connection()
+                deleted += 1
+            except Exception as exc:
+                self.logger.error("Failed deleting connection: %s", exc)
+        return deleted
 
-            self.logger.info(f"Deleted {item_count} items via keyboard shortcut")
-            return True
+    def _delete_notes(self, notes: list) -> int:
+        """Delete note items and any attached connections first."""
+        deleted = 0
+        for note in notes:
+            try:
+                # Prefer item's own deletion method (no per-item prompt)
+                if hasattr(note, "_delete_note"):
+                    note._delete_note()
+                else:
+                    if hasattr(self.scene(), "delete_connections_for_note"):
+                        self.scene().delete_connections_for_note(note)
+                    if note.scene():
+                        note.scene().removeItem(note)
+                self.logger.debug(
+                    "Deleted note %s", getattr(note, "_note_id", "unknown")
+                )
+                deleted += 1
+            except Exception as exc:
+                self.logger.error("Failed deleting note: %s", exc)
+        return deleted
 
-        return True  # Handled even if cancelled
+    def _delete_images(self, images: list) -> int:
+        """Delete image items and any attached connections first."""
+        deleted = 0
+        for img in images:
+            try:
+                # Prefer item's own deletion method (no per-item prompt)
+                if hasattr(img, "_delete_image"):
+                    img._delete_image()
+                else:
+                    if hasattr(self.scene(), "delete_connections_for_item"):
+                        self.scene().delete_connections_for_item(img)
+                    if img.scene():
+                        img.scene().removeItem(img)
+                self.logger.debug(
+                    "Deleted image %s", getattr(img, "_image_id", "unknown")
+                )
+                deleted += 1
+            except Exception as exc:
+                self.logger.error("Failed deleting image: %s", exc)
+        return deleted
 
     def _handle_copy_shortcut(self) -> bool:
         """Handle copy shortcut for selected note content."""

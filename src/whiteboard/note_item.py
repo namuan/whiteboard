@@ -150,20 +150,38 @@ class NoteItem(QGraphicsTextItem):
         self.setTextCursor(cursor)
 
     def _update_geometry(self) -> None:
-        """Update the note geometry based on content and minimum size."""
-        # Get text bounds
-        text_rect = self.boundingRect()
-
-        # Ensure minimum size
-        min_width = self._style["min_width"]
+        """Update the note geometry based on content with min/max width constraints."""
+        # Determine sizing constraints from style
         padding = self._style["padding"]
+        min_width = self._style["min_width"]
+        # Provide a sensible default if not present in persisted styles
+        max_width = self._style.get("max_width", 320)
 
-        # Calculate required size including padding
-        required_width = max(text_rect.width() + 2 * padding, min_width)
+        # Calculate the natural (unwrapped) content width by disabling wrapping
+        # Temporarily disable wrapping to measure intrinsic width
+        self.setTextWidth(-1)
+        natural_text_rect = super().boundingRect()
+        natural_width = natural_text_rect.width()
 
-        # Set text width if needed to wrap text
-        if text_rect.width() + 2 * padding > min_width:
-            self.setTextWidth(required_width - 2 * padding)
+        # Compute desired content area width (without padding)
+        min_content_width = max(min_width - 2 * padding, 1)
+        max_content_width = max(max_width - 2 * padding, min_content_width)
+        desired_content_width = natural_width
+        if desired_content_width < min_content_width:
+            desired_content_width = min_content_width
+        if desired_content_width > max_content_width:
+            desired_content_width = max_content_width
+
+        # Apply clamped width for wrapping and layout
+        self.setTextWidth(desired_content_width)
+
+        # Logging for diagnostics
+        self.logger.debug(
+            f"_update_geometry: natural_width={natural_width:.2f}, "
+            f"min_content_width={min_content_width}, max_content_width={max_content_width}, "
+            f"applied_content_width={desired_content_width}, padding={padding}, "
+            f"min_width={min_width}, max_width={max_width}"
+        )
 
     def boundingRect(self) -> QRectF:
         """
@@ -397,7 +415,8 @@ class NoteItem(QGraphicsTextItem):
         # Delete note
         delete_action = operations_menu.addAction("🗑️ Delete Note")
         delete_action.setShortcut(QKeySequence.StandardKey.Delete)
-        delete_action.triggered.connect(self._delete_note)
+        # Route to canvas centralized delete flow
+        delete_action.triggered.connect(lambda: self._request_centralized_delete())
 
         menu.addSeparator()
 
@@ -861,32 +880,28 @@ class NoteItem(QGraphicsTextItem):
         self.hover_started.emit("📋 Note content copied to clipboard!")
         self.logger.debug(f"Copied content of note {self._note_id} to clipboard")
 
+    def _request_centralized_delete(self) -> None:
+        """Ask the canvas to delete this note via centralized confirmation dialog."""
+        try:
+            if self.scene() and self.scene().views():
+                view = self.scene().views()[0]
+                canvas = getattr(view, "_canvas", None)
+                if canvas and hasattr(canvas, "delete_items_with_confirmation"):
+                    canvas.delete_items_with_confirmation([self])
+                    return
+        except Exception as e:
+            self.logger.error(f"Failed to route note deletion to canvas: {e}")
+        # Fallback to legacy behavior
+        self._delete_note()
+
     def _delete_note(self) -> None:
-        """Delete this note from the scene."""
-        from PyQt6.QtWidgets import QMessageBox
+        """Delete this note from the scene without prompting (centralized confirmation is handled by Canvas)."""
+        # Delete connections first
+        if hasattr(self.scene(), "delete_connections_for_note"):
+            self.scene().delete_connections_for_note(self)
 
-        # Get parent window for dialog
-        parent = None
-        if self.scene() and self.scene().views():
-            view = self.scene().views()[0]
-            parent = view.window()
+        # Remove from scene
+        if self.scene():
+            self.scene().removeItem(self)
 
-        # Confirm deletion
-        reply = QMessageBox.question(
-            parent,
-            "Delete Note",
-            "Are you sure you want to delete this note?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-
-        if reply == QMessageBox.StandardButton.Yes:
-            # Delete connections first
-            if hasattr(self.scene(), "delete_connections_for_note"):
-                self.scene().delete_connections_for_note(self)
-
-            # Remove from scene
-            if self.scene():
-                self.scene().removeItem(self)
-
-            self.logger.debug(f"Deleted note {self._note_id}")
+        self.logger.debug(f"Deleted note {self._note_id} (no per-item prompt)")
