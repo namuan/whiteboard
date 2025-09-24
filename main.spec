@@ -18,12 +18,12 @@ pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 exe = EXE(pyz,
           a.scripts,
           exclude_binaries=True,
-          name='app',
+          name='whiteboard',
           debug=False,
           strip=False,
           upx=True,
           console=False,
-          icon='assets\\icon.ico')
+          icon='assets/icon.ico')
 
 coll = COLLECT(exe,
                a.binaries,
@@ -31,16 +31,16 @@ coll = COLLECT(exe,
                a.datas,
                strip=False,
                upx=True,
-               name='MeetingBuddy')
+               name='Whiteboard')
 
 app = BUNDLE(coll,
-             name='MeetingBuddy.app',
+             name='Whiteboard.app',
              icon='assets/icon.icns',
-             bundle_identifier='com.github.namuan.meetingbuddy',
+             bundle_identifier='com.github.namuan.whiteboard',
              info_plist={
-                'CFBundleName': 'Meeting Buddy',
-                'CFBundleVersion': '1.0.0',
-                'CFBundleShortVersionString': '1.0.0',
+                'CFBundleName': 'Digital Whiteboard',
+                'CFBundleVersion': '0.1.0',
+                'CFBundleShortVersionString': '0.1.0',
                 'NSPrincipalClass': 'NSApplication',
                 'NSHighResolutionCapable': True,
                 }

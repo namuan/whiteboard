@@ -70,11 +70,15 @@ class TestAutoSave:
         main_window._current_file_path = Path("/test/path.wb")
         main_window._auto_save_enabled = True
 
-        with patch.object(
-            main_window._session_manager, "serialize_scene_data"
-        ) as mock_serialize, patch.object(
-            main_window._session_manager, "save_session_to_file"
-        ) as mock_save, patch("PyQt6.QtCore.QTimer.singleShot") as mock_single_shot:
+        with (
+            patch.object(
+                main_window._session_manager, "serialize_scene_data"
+            ) as mock_serialize,
+            patch.object(
+                main_window._session_manager, "save_session_to_file"
+            ) as mock_save,
+            patch("PyQt6.QtCore.QTimer.singleShot") as mock_single_shot,
+        ):
             mock_serialize.return_value = {"test": "data"}
 
             # Call auto-save which should schedule background save
@@ -127,13 +131,13 @@ class TestAutoSave:
         main_window._scene_modified = True
         main_window._current_file_path = Path("/test/file.json")
 
-        with patch.object(
-            main_window._session_manager, "serialize_scene_data"
-        ) as mock_serialize, patch.object(
-            main_window, "statusBar"
-        ) as mock_status_bar, patch.object(
-            main_window.logger, "warning"
-        ) as mock_log_warning:
+        with (
+            patch.object(
+                main_window._session_manager, "serialize_scene_data"
+            ) as mock_serialize,
+            patch.object(main_window, "statusBar") as mock_status_bar,
+            patch.object(main_window.logger, "warning") as mock_log_warning,
+        ):
             mock_serialize.side_effect = SessionError("Serialization failed")
 
             # Should not raise exception
@@ -155,13 +159,13 @@ class TestAutoSave:
         main_window._scene_modified = True
         main_window._current_file_path = Path("/test/file.json")
 
-        with patch.object(
-            main_window._session_manager, "serialize_scene_data"
-        ) as mock_serialize, patch.object(
-            main_window, "statusBar"
-        ) as mock_status_bar, patch.object(
-            main_window.logger, "error"
-        ) as mock_log_error:
+        with (
+            patch.object(
+                main_window._session_manager, "serialize_scene_data"
+            ) as mock_serialize,
+            patch.object(main_window, "statusBar") as mock_status_bar,
+            patch.object(main_window.logger, "error") as mock_log_error,
+        ):
             mock_serialize.side_effect = Exception("Unexpected error")
 
             # Should not raise exception
@@ -183,11 +187,14 @@ class TestAutoSave:
         main_window._scene_modified = True
         main_window._current_file_path = Path("/test/file.json")
 
-        with patch.object(
-            main_window._session_manager, "serialize_scene_data"
-        ) as mock_serialize, patch.object(
-            main_window._session_manager, "save_session_to_file"
-        ) as mock_save:
+        with (
+            patch.object(
+                main_window._session_manager, "serialize_scene_data"
+            ) as mock_serialize,
+            patch.object(
+                main_window._session_manager, "save_session_to_file"
+            ) as mock_save,
+        ):
             # First call fails
             mock_serialize.side_effect = [
                 SessionError("First failure"),
@@ -279,9 +286,12 @@ class TestAutoSave:
         main_window._current_file_path = Path("/test/file.json")
         main_window._auto_save_enabled = True
 
-        with patch.object(
-            main_window._session_manager, "serialize_scene_data"
-        ) as mock_serialize, patch.object(main_window, "statusBar") as mock_status_bar:
+        with (
+            patch.object(
+                main_window._session_manager, "serialize_scene_data"
+            ) as mock_serialize,
+            patch.object(main_window, "statusBar") as mock_status_bar,
+        ):
             mock_serialize.side_effect = SessionError("Test error")
 
             # Should not raise exception
@@ -304,9 +314,12 @@ class TestAutoSave:
         main_window._current_file_path = Path("/test/file.json")
         main_window._auto_save_enabled = True
 
-        with patch.object(
-            main_window._session_manager, "serialize_scene_data"
-        ) as mock_serialize, patch.object(main_window, "statusBar") as mock_status_bar:
+        with (
+            patch.object(
+                main_window._session_manager, "serialize_scene_data"
+            ) as mock_serialize,
+            patch.object(main_window, "statusBar") as mock_status_bar,
+        ):
             mock_serialize.side_effect = Exception("Unexpected error")
 
             # Should not raise exception
@@ -351,9 +364,10 @@ class TestAutoSave:
         """Test setting auto-save interval when timer is active."""
         new_interval = 60000  # 1 minute
 
-        with patch.object(
-            main_window._auto_save_timer, "isActive", return_value=True
-        ), patch.object(main_window._auto_save_timer, "start") as mock_start:
+        with (
+            patch.object(main_window._auto_save_timer, "isActive", return_value=True),
+            patch.object(main_window._auto_save_timer, "start") as mock_start,
+        ):
             main_window.set_auto_save_interval(new_interval)
 
             assert main_window._auto_save_interval == new_interval
@@ -363,9 +377,10 @@ class TestAutoSave:
         """Test setting auto-save interval when timer is inactive."""
         new_interval = 60000  # 1 minute
 
-        with patch.object(
-            main_window._auto_save_timer, "isActive", return_value=False
-        ), patch.object(main_window._auto_save_timer, "start") as mock_start:
+        with (
+            patch.object(main_window._auto_save_timer, "isActive", return_value=False),
+            patch.object(main_window._auto_save_timer, "start") as mock_start,
+        ):
             main_window.set_auto_save_interval(new_interval)
 
             assert main_window._auto_save_interval == new_interval
@@ -376,10 +391,11 @@ class TestAutoSave:
         main_window._scene_modified = True
         main_window._current_file_path = Path("/test/file.json")
 
-        with patch.object(
-            main_window._session_manager, "serialize_scene_data"
-        ) as mock_serialize, patch.object(
-            main_window._session_manager, "save_session_to_file"
+        with (
+            patch.object(
+                main_window._session_manager, "serialize_scene_data"
+            ) as mock_serialize,
+            patch.object(main_window._session_manager, "save_session_to_file"),
         ):
             mock_serialize.return_value = {"notes": [], "connections": []}
             main_window._save_to_file(Path("/test/file.json"))
@@ -390,13 +406,15 @@ class TestAutoSave:
         """Test that loading resets the scene modified flag."""
         main_window._scene_modified = True
 
-        with patch.object(
-            main_window._session_manager, "load_session_from_file"
-        ) as mock_load, patch.object(
-            main_window._session_manager, "deserialize_scene_data"
-        ), patch(
-            "PyQt6.QtWidgets.QFileDialog.getOpenFileName",
-            return_value=("/test/file.json", ""),
+        with (
+            patch.object(
+                main_window._session_manager, "load_session_from_file"
+            ) as mock_load,
+            patch.object(main_window._session_manager, "deserialize_scene_data"),
+            patch(
+                "PyQt6.QtWidgets.QFileDialog.getOpenFileName",
+                return_value=("/test/file.json", ""),
+            ),
         ):
             mock_load.return_value = {"notes": [], "connections": []}
             main_window._on_load()

@@ -509,11 +509,14 @@ class TestSessionManager(unittest.TestCase):
 
         mock_scene = Mock()
 
-        with patch.object(
-            self.session_manager, "_deserialize_note"
-        ) as mock_deserialize_note, patch.object(
-            self.session_manager, "_deserialize_connection"
-        ) as mock_deserialize_connection:
+        with (
+            patch.object(
+                self.session_manager, "_deserialize_note"
+            ) as mock_deserialize_note,
+            patch.object(
+                self.session_manager, "_deserialize_connection"
+            ) as mock_deserialize_connection,
+        ):
             mock_note = Mock()
             mock_deserialize_note.return_value = mock_note
             mock_deserialize_connection.return_value = None  # No connection created

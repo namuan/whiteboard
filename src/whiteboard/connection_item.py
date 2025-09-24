@@ -2,10 +2,11 @@
 Connection item implementation for the Digital Whiteboard application.
 
 This module contains the ConnectionItem class which represents visual connections
-between notes on the whiteboard canvas with arrow rendering and dynamic updates.
+between items on the whiteboard canvas with arrow rendering and dynamic updates.
 """
 
 import math
+from typing import Any, Protocol
 from PyQt6.QtCore import Qt, QPointF, QRectF, pyqtSignal, QObject
 from PyQt6.QtGui import (
     QPainter,
@@ -26,7 +27,22 @@ from PyQt6.QtWidgets import (
 )
 
 from .utils.logging_config import get_logger
-from .note_item import NoteItem
+
+
+class ConnectionEndpoint(Protocol):
+    """Protocol defining the interface for connection endpoints."""
+
+    def get_connection_points(self) -> list[QPointF]:
+        """Return points where connections can attach to this item."""
+        ...
+
+    def mapToScene(self, point: QPointF) -> QPointF:
+        """Map a point from item coordinates to scene coordinates."""
+        ...
+
+    def boundingRect(self) -> QRectF:
+        """Return the bounding rectangle of the item."""
+        ...
 
 
 class ConnectionSignals(QObject):
@@ -38,25 +54,33 @@ class ConnectionSignals(QObject):
 
 class ConnectionItem(QGraphicsPathItem):
     """
-    Connection line/arrow between two notes.
+    Connection line/arrow between two items.
 
-    A custom QGraphicsPathItem that draws lines or arrows connecting two notes,
+    A custom QGraphicsPathItem that draws lines or arrows connecting two items,
     with automatic path calculation, arrow head rendering, and dynamic updates
-    when connected notes are moved.
+    when connected items are moved or resized.
+
+    The ConnectionItem uses duck typing to accept any endpoint that implements:
+    - get_connection_points() -> list[QPointF]
+    - mapToScene(QPointF) -> QPointF
+    - boundingRect() -> QRectF
+    - position_changed signal (optional)
+    - style_changed signal (optional)
 
     Requirements addressed:
-    - 2.1: Visual connection lines between notes
+    - 2.1: Visual connection lines between items
     - 2.2: Arrow head rendering and line styling options
-    - 2.3: Dynamic connection updates when notes move
+    - 2.3: Dynamic connection updates when items move/resize
+    - 2.4: Support for both NoteItem and ImageItem endpoints
     """
 
-    def __init__(self, start_note: NoteItem, end_note: NoteItem):
+    def __init__(self, start_item: ConnectionEndpoint, end_item: ConnectionEndpoint):
         """
-        Initialize a connection between two notes.
+        Initialize a connection between two items.
 
         Args:
-            start_note: Source note for the connection
-            end_note: Target note for the connection
+            start_item: Source item for the connection (must implement ConnectionEndpoint protocol)
+            end_item: Target item for the connection (must implement ConnectionEndpoint protocol)
         """
         super().__init__()
         self.logger = get_logger(__name__)
@@ -66,8 +90,8 @@ class ConnectionItem(QGraphicsPathItem):
 
         # Connection properties
         self._connection_id = id(self)
-        self._start_note = start_note
-        self._end_note = end_note
+        self._start_item = start_item
+        self._end_item = end_item
 
         # Connection points (will be calculated)
         self._start_point = QPointF()
@@ -87,16 +111,38 @@ class ConnectionItem(QGraphicsPathItem):
         # Setup connection
         self._setup_connection()
 
-        # Connect to note position changes
-        self._connect_note_signals()
+        # Connect to item position/style changes
+        self._connect_item_signals()
 
         # Set helpful tooltip
         self.setToolTip("Right-click for connection options")
 
+        # Get item identifiers for logging (duck-typed)
+        start_id = self._get_item_id(start_item)
+        end_id = self._get_item_id(end_item)
+
         self.logger.debug(
-            f"Created ConnectionItem {self._connection_id} between notes "
-            f"{self._start_note.get_note_id()} and {self._end_note.get_note_id()}"
+            f"Created ConnectionItem {self._connection_id} between items "
+            f"{start_id} and {end_id}"
         )
+
+    def _get_item_id(self, item: ConnectionEndpoint) -> str:
+        """
+        Get a string identifier for an item using duck typing.
+
+        Args:
+            item: The item to get an identifier for
+
+        Returns:
+            String identifier for the item
+        """
+        # Try different methods to get an ID, falling back to object id
+        if hasattr(item, "get_note_id"):
+            return f"note_{item.get_note_id()}"
+        elif hasattr(item, "get_image_id"):
+            return f"image_{item.get_image_id()}"
+        else:
+            return f"item_{id(item)}"
 
     def _setup_connection(self) -> None:
         """Configure the connection item properties."""
@@ -104,28 +150,137 @@ class ConnectionItem(QGraphicsPathItem):
         self.setFlag(QGraphicsPathItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setFlag(QGraphicsPathItem.GraphicsItemFlag.ItemIsFocusable, True)
 
-        # Set Z-value to render behind notes
+        # Set Z-value to render behind items
         self.setZValue(-1)
 
         # Calculate initial path
         self.update_path()
 
-    def _connect_note_signals(self) -> None:
-        """Connect to note position change signals for dynamic updates."""
-        self._start_note.position_changed.connect(self.update_path)
-        self._end_note.position_changed.connect(self.update_path)
+    def _connect_item_signals(self) -> None:
+        """Connect to item position/style change signals for dynamic updates."""
 
-        # Also connect to geometry changes that might affect connection points
-        if hasattr(self._start_note, "style_changed"):
-            self._start_note.style_changed.connect(self.update_path)
-        if hasattr(self._end_note, "style_changed"):
-            self._end_note.style_changed.connect(self.update_path)
+        # Helper to connect either direct signals or nested 'signals'
+        def _connect_signals_for(item: ConnectionEndpoint, label: str) -> None:
+            # Direct signals on the item (NoteItem pattern)
+            if hasattr(item, "position_changed"):
+                try:
+                    item.position_changed.connect(self.update_path)
+                    self.logger.debug(f"Connected direct position_changed for {label}")
+                except Exception as e:
+                    self.logger.debug(
+                        f"Failed connecting direct position_changed for {label}: {e}"
+                    )
+            if hasattr(item, "style_changed"):
+                try:
+                    item.style_changed.connect(self.update_path)
+                    self.logger.debug(f"Connected direct style_changed for {label}")
+                except Exception as e:
+                    self.logger.debug(
+                        f"Failed connecting direct style_changed for {label}: {e}"
+                    )
+
+            # Signals exposed via a nested QObject, e.g., ImageItem.signals
+            nested = getattr(item, "signals", None)
+            if nested is not None:
+                if hasattr(nested, "position_changed"):
+                    try:
+                        nested.position_changed.connect(self.update_path)
+                        self.logger.debug(
+                            f"Connected nested position_changed for {label}"
+                        )
+                    except Exception as e:
+                        self.logger.debug(
+                            f"Failed connecting nested position_changed for {label}: {e}"
+                        )
+                if hasattr(nested, "style_changed"):
+                    try:
+                        nested.style_changed.connect(self.update_path)
+                        self.logger.debug(f"Connected nested style_changed for {label}")
+                    except Exception as e:
+                        self.logger.debug(
+                            f"Failed connecting nested style_changed for {label}: {e}"
+                        )
+
+        _connect_signals_for(self._start_item, "start_item")
+        _connect_signals_for(self._end_item, "end_item")
+
+    def delete_connection(self) -> None:
+        """Delete this connection from the scene."""
+        # Disconnect from item signals
+        self._disconnect_item_signals()
+
+        # Remove from scene
+        if self.scene():
+            self.scene().removeItem(self)
+
+        # Emit deletion signal
+        self.signals.connection_deleted.emit()
+
+        self.logger.debug(f"Deleted connection {self._connection_id}")
+
+    def _disconnect_item_signals(self) -> None:
+        """Disconnect from item position/style change signals (both direct and nested)."""
+
+        def _disconnect_for(item: ConnectionEndpoint, label: str) -> None:
+            try:
+                if hasattr(item, "position_changed"):
+                    item.position_changed.disconnect(self.update_path)
+                    self.logger.debug(
+                        f"Disconnected direct position_changed for {label}"
+                    )
+            except TypeError:
+                pass
+            except Exception as e:
+                self.logger.debug(
+                    f"Failed disconnecting direct position_changed for {label}: {e}"
+                )
+
+            try:
+                if hasattr(item, "style_changed"):
+                    item.style_changed.disconnect(self.update_path)
+                    self.logger.debug(f"Disconnected direct style_changed for {label}")
+            except TypeError:
+                pass
+            except Exception as e:
+                self.logger.debug(
+                    f"Failed disconnecting direct style_changed for {label}: {e}"
+                )
+
+            nested = getattr(item, "signals", None)
+            if nested is not None:
+                try:
+                    if hasattr(nested, "position_changed"):
+                        nested.position_changed.disconnect(self.update_path)
+                        self.logger.debug(
+                            f"Disconnected nested position_changed for {label}"
+                        )
+                except TypeError:
+                    pass
+                except Exception as e:
+                    self.logger.debug(
+                        f"Failed disconnecting nested position_changed for {label}: {e}"
+                    )
+                try:
+                    if hasattr(nested, "style_changed"):
+                        nested.style_changed.disconnect(self.update_path)
+                        self.logger.debug(
+                            f"Disconnected nested style_changed for {label}"
+                        )
+                except TypeError:
+                    pass
+                except Exception as e:
+                    self.logger.debug(
+                        f"Failed disconnecting nested style_changed for {label}: {e}"
+                    )
+
+        _disconnect_for(self._start_item, "start_item")
+        _disconnect_for(self._end_item, "end_item")
 
     def update_path(self) -> None:
         """
-        Recalculate and update the connection path when notes move.
+        Recalculate and update the connection path when items move or resize.
 
-        This method finds the optimal connection points on each note's boundary
+        This method finds the optimal connection points on each item's boundary
         and creates a path between them with optional arrow head.
         """
         # Get optimal connection points
@@ -147,20 +302,20 @@ class ConnectionItem(QGraphicsPathItem):
 
     def _calculate_connection_points(self) -> tuple[QPointF, QPointF]:
         """
-        Calculate the optimal connection points on the note boundaries.
+        Calculate the optimal connection points on the item boundaries.
 
         Returns:
             Tuple of (start_point, end_point) in scene coordinates
         """
-        # Get note centers in scene coordinates
-        start_center = self._start_note.mapToScene(
-            self._start_note.boundingRect().center()
+        # Get item centers in scene coordinates as fallback
+        start_center = self._start_item.mapToScene(
+            self._start_item.boundingRect().center()
         )
-        end_center = self._end_note.mapToScene(self._end_note.boundingRect().center())
+        end_center = self._end_item.mapToScene(self._end_item.boundingRect().center())
 
-        # Get all possible connection points for each note
-        start_points = self._start_note.get_connection_points()
-        end_points = self._end_note.get_connection_points()
+        # Get all possible connection points for each item
+        start_points = self._start_item.get_connection_points()
+        end_points = self._end_item.get_connection_points()
 
         # Find the closest pair of connection points
         min_distance = float("inf")
@@ -509,34 +664,6 @@ class ConnectionItem(QGraphicsPathItem):
         # Accept the event to prevent propagation
         event.accept()
 
-    def delete_connection(self) -> None:
-        """Delete this connection from the scene."""
-        # Disconnect from note signals
-        self._disconnect_note_signals()
-
-        # Remove from scene
-        if self.scene():
-            self.scene().removeItem(self)
-
-        # Emit deletion signal
-        self.signals.connection_deleted.emit()
-
-        self.logger.debug(f"Deleted connection {self._connection_id}")
-
-    def _disconnect_note_signals(self) -> None:
-        """Disconnect from note position change signals."""
-        try:
-            self._start_note.position_changed.disconnect(self.update_path)
-            self._end_note.position_changed.disconnect(self.update_path)
-
-            if hasattr(self._start_note, "style_changed"):
-                self._start_note.style_changed.disconnect(self.update_path)
-            if hasattr(self._end_note, "style_changed"):
-                self._end_note.style_changed.disconnect(self.update_path)
-        except TypeError:
-            # Signals may already be disconnected
-            pass
-
     def set_style(self, style_dict: dict) -> None:
         """
         Apply custom styling to the connection.
@@ -570,23 +697,42 @@ class ConnectionItem(QGraphicsPathItem):
         """
         return self._style.copy()
 
-    def get_start_note(self) -> NoteItem:
+    def get_start_item(self) -> ConnectionEndpoint:
         """
-        Get the start note of this connection.
+        Get the start item of this connection.
 
         Returns:
-            Start note item
+            Start item
         """
-        return self._start_note
+        return self._start_item
 
-    def get_end_note(self) -> NoteItem:
+    def get_end_item(self) -> ConnectionEndpoint:
         """
-        Get the end note of this connection.
+        Get the end item of this connection.
 
         Returns:
-            End note item
+            End item
         """
-        return self._end_note
+        return self._end_item
+
+    # Legacy methods for backward compatibility
+    def get_start_note(self) -> Any:
+        """
+        Get the start note of this connection (legacy method).
+
+        Returns:
+            Start item (may not be a note)
+        """
+        return self._start_item
+
+    def get_end_note(self) -> Any:
+        """
+        Get the end note of this connection (legacy method).
+
+        Returns:
+            End item (may not be a note)
+        """
+        return self._end_item
 
     def get_connection_id(self) -> int:
         """
@@ -604,10 +750,28 @@ class ConnectionItem(QGraphicsPathItem):
         Returns:
             Dictionary containing all connection data
         """
+        # Get item IDs using duck typing
+        start_id = self._get_item_id(self._start_item)
+        end_id = self._get_item_id(self._end_item)
+
+        # Legacy numeric note IDs for compatibility with existing tests
+        start_note_id = (
+            self._start_item.get_note_id()
+            if hasattr(self._start_item, "get_note_id")
+            else None
+        )
+        end_note_id = (
+            self._end_item.get_note_id()
+            if hasattr(self._end_item, "get_note_id")
+            else None
+        )
+
         return {
             "id": self._connection_id,
-            "start_note_id": self._start_note.get_note_id(),
-            "end_note_id": self._end_note.get_note_id(),
+            "start_item_id": start_id,
+            "end_item_id": end_id,
+            "start_note_id": start_note_id,  # Legacy compatibility expects int for notes
+            "end_note_id": end_note_id,  # Legacy compatibility expects int for notes
             "style": self._style.copy(),
             "start_point": (self._start_point.x(), self._start_point.y()),
             "end_point": (self._end_point.x(), self._end_point.y()),
@@ -649,19 +813,19 @@ class ConnectionItem(QGraphicsPathItem):
         stroked_path = stroker.createStroke(self.path())
         return stroked_path.contains(point)
 
-    def is_connected_to_note(self, note: NoteItem) -> bool:
+    def is_connected_to_note(self, note: Any) -> bool:
         """
-        Check if this connection is connected to the specified note.
+        Check if this connection is connected to the given note.
 
         Args:
-            note: Note to check connection to
+            note: The note to check
 
         Returns:
-            True if connected to the note, False otherwise
+            True if the note is connected to this connection
         """
-        return note == self._start_note or note == self._end_note
+        return note == self._start_item or note == self._end_item
 
-    def get_other_note(self, note: NoteItem) -> NoteItem | None:
+    def get_other_note(self, note: Any) -> Any | None:
         """
         Get the other note in this connection.
 
@@ -671,9 +835,22 @@ class ConnectionItem(QGraphicsPathItem):
         Returns:
             The other connected note, or None if the provided note is not connected
         """
-        if note == self._start_note:
-            return self._end_note
-        elif note == self._end_note:
-            return self._start_note
-        else:
-            return None
+        if note == self._start_item:
+            return self._end_item
+        elif note == self._end_item:
+            return self._start_item
+        return None
+
+    def _disconnect_note_signals(self) -> None:
+        """Compatibility shim: disconnect note signals (delegates to item signals)."""
+        # Some tests call this legacy method; delegate to unified handler
+        try:
+            self.logger.debug(
+                "Compatibility: _disconnect_note_signals called; delegating to _disconnect_item_signals"
+            )
+            self._disconnect_item_signals()
+        except Exception as e:
+            # Silently ignore to match legacy behavior where signals may already be disconnected
+            self.logger.debug(
+                f"_disconnect_note_signals encountered non-fatal issue: {e}"
+            )

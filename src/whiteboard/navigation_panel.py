@@ -150,6 +150,15 @@ class MinimapWidget(QGraphicsView):
         except Exception as e:
             self.logger.error(f"Error updating viewport indicator: {e}")
 
+    def _count_item_types(self, items: list) -> tuple[int, int, int]:
+        """Count different item types for logging purposes."""
+        image_count = sum(1 for item in items if "ImageItem" in type(item).__name__)
+        note_count = sum(1 for item in items if "NoteItem" in type(item).__name__)
+        connection_count = sum(
+            1 for item in items if "ConnectionItem" in type(item).__name__
+        )
+        return image_count, note_count, connection_count
+
     def update_content(self, force_full_update: bool = False) -> None:
         """Update minimap content with performance optimizations."""
         if not self._main_scene:
@@ -173,8 +182,13 @@ class MinimapWidget(QGraphicsView):
             main_scene_rect = self._main_scene.sceneRect()
             item_count = len(main_items)
 
+            # Count different item types for logging
+            image_count, note_count, connection_count = self._count_item_types(
+                main_items
+            )
+
             self.logger.debug(
-                f"Main scene has {item_count} items, scene rect: {main_scene_rect}"
+                f"Main scene has {item_count} items (Images: {image_count}, Notes: {note_count}, Connections: {connection_count}), scene rect: {main_scene_rect}"
             )
 
             # Determine if we should use level-of-detail rendering
@@ -348,6 +362,8 @@ class MinimapWidget(QGraphicsView):
             return self._create_note_representation(bounds, pos, use_lod)
         elif hasattr(item, "line"):  # Connection item
             return self._create_connection_representation(item, pos, use_lod)
+        elif hasattr(item, "get_image_id"):  # Image item
+            return self._create_image_representation(bounds, pos, use_lod)
         else:
             self.logger.debug(
                 f"Creating generic representation for unknown item type: {item_type}"
@@ -383,6 +399,24 @@ class MinimapWidget(QGraphicsView):
         minimap_item = self._minimap_scene.addLine(line, pen)
         minimap_item.setPos(pos)
         minimap_item.setZValue(5)  # Connections below notes
+        return minimap_item
+
+    def _create_image_representation(self, bounds: QRectF, pos: QPointF, use_lod: bool):
+        """Create an image representation for the minimap."""
+        self.logger.debug(
+            f"Creating image representation at {pos} with bounds {bounds}"
+        )
+
+        if use_lod:
+            pen = QPen(QColor(80, 120, 160), 0.3)
+            brush = QBrush(QColor(120, 160, 200, 100))
+        else:
+            pen = QPen(QColor(60, 100, 140), 0.5)
+            brush = QBrush(QColor(100, 140, 180, 150))
+
+        minimap_item = self._minimap_scene.addRect(bounds, pen, brush)
+        minimap_item.setPos(pos)
+        minimap_item.setZValue(8)  # Images between connections and notes
         return minimap_item
 
     def _create_generic_representation(

@@ -15,6 +15,9 @@ from PyQt6.QtGui import (
     QPen,
     QContextMenuEvent,
     QKeySequence,
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
 )
 from PyQt6.QtWidgets import QGraphicsScene, QGraphicsView, QGraphicsItem, QMenu
 
@@ -145,17 +148,31 @@ class WhiteboardScene(QGraphicsScene):
             QRectF containing all scene items, or empty rect if no items
         """
         if not self._tracked_items:
+            self.logger.debug("No tracked items found for content bounds calculation")
             return QRectF()
 
         # Calculate union of all item bounds
         content_rect = QRectF()
         valid_items = []
+        image_count = 0
+        note_count = 0
+        connection_count = 0
 
         for item in self._tracked_items:
             try:
                 # Check if the item is still valid (not deleted)
                 item_rect = item.sceneBoundingRect()
                 valid_items.append(item)
+
+                # Count different item types for logging
+                item_type = type(item).__name__
+                if "ImageItem" in item_type:
+                    image_count += 1
+                    self.logger.debug(f"Including ImageItem in bounds: {item_rect}")
+                elif "NoteItem" in item_type:
+                    note_count += 1
+                elif "ConnectionItem" in item_type:
+                    connection_count += 1
 
                 if content_rect.isNull():
                     content_rect = item_rect
@@ -168,6 +185,11 @@ class WhiteboardScene(QGraphicsScene):
 
         # Update tracked items to remove any deleted ones
         self._tracked_items = valid_items
+
+        self.logger.debug(
+            f"Content bounds calculated: {content_rect} "
+            f"(Images: {image_count}, Notes: {note_count}, Connections: {connection_count})"
+        )
 
         return content_rect
 
@@ -307,6 +329,9 @@ class WhiteboardCanvas(QGraphicsView):
         self.setDragMode(QGraphicsView.DragMode.RubberBandDrag)
         self.setInteractive(True)
 
+        # Enable drag-and-drop functionality
+        self.setAcceptDrops(True)
+
         # Configure scroll bars
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -385,10 +410,17 @@ class WhiteboardCanvas(QGraphicsView):
             scene_pos = self.mapToScene(event.pos())
             item_at_pos = self.scene().itemAt(scene_pos, self.transform())
 
-            if isinstance(item_at_pos, NoteItem):
+            # Allow connections from both NoteItem and ImageItem
+            from .note_item import NoteItem
+            from .image_item import ImageItem
+
+            if isinstance(item_at_pos, (NoteItem, ImageItem)):
                 self._start_connection_creation(item_at_pos, event.position())
+                self.logger.debug(
+                    f"Starting connection from {type(item_at_pos).__name__}"
+                )
             else:
-                # Default behavior if not clicking on a note
+                # Default behavior if not clicking on a connectable item
                 super().mousePressEvent(event)
         else:
             # Default behavior for other mouse interactions
@@ -838,6 +870,13 @@ class WhiteboardCanvas(QGraphicsView):
         # Emit zoom changed signal
         self.zoom_changed.emit(self._zoom_factor)
 
+        # Emit viewport changed signal for minimap updates
+        viewport_rect = self.mapToScene(self.viewport().rect()).boundingRect()
+        self.viewport_changed.emit(viewport_rect)
+        self.logger.debug(
+            f"Viewport changed signal emitted after zoom: {viewport_rect}"
+        )
+
         self.logger.debug(
             f"Zoom applied: {self._zoom_factor:.3f}x (scale factor: {scale_factor:.3f})"
         )
@@ -876,6 +915,10 @@ class WhiteboardCanvas(QGraphicsView):
         # Emit pan changed signal
         center_point = self.mapToScene(self.rect().center())
         self.pan_changed.emit(center_point)
+
+        # Emit viewport changed signal for minimap updates
+        viewport_rect = self.mapToScene(self.viewport().rect()).boundingRect()
+        self.viewport_changed.emit(viewport_rect)
 
     def center_on_content(self) -> None:
         """Center the view on all content in the scene with enhanced feedback."""
@@ -930,7 +973,7 @@ class WhiteboardCanvas(QGraphicsView):
         # Fit the content bounds in view
         self.fitInView(content_bounds, Qt.AspectRatioMode.KeepAspectRatio)
 
-        # Update zoom factor based on transformation
+        # Update zoom factor based on the new view
         transform = self.transform()
         self._zoom_factor = max(self._min_zoom, min(transform.m11(), self._max_zoom))
 
@@ -978,26 +1021,33 @@ class WhiteboardCanvas(QGraphicsView):
             **scene_stats,
         }
 
-    def _start_connection_creation(
-        self, start_note: NoteItem, mouse_pos: QPointF
-    ) -> None:
+    def _start_connection_creation(self, start_item, mouse_pos: QPointF) -> None:
         """
-        Start connection creation from a note.
+        Start connection creation from an item.
 
         Args:
-            start_note: Note to start the connection from
+            start_item: Item to start the connection from (NoteItem or ImageItem)
             mouse_pos: Mouse position in view coordinates
         """
         self._connection_mode = True
-        self._connection_start_note = start_note
+        self._connection_start_note = (
+            start_item  # Keeping variable name for compatibility
+        )
         self._last_pan_point = mouse_pos  # Store initial position for drag threshold
 
         # Change cursor to indicate connection mode
         self.setCursor(Qt.CursorShape.CrossCursor)
 
-        self.logger.debug(
-            f"Started connection creation from note {start_note.get_note_id()}"
-        )
+        # Get item identifier for logging
+        item_id = None
+        if hasattr(start_item, "get_note_id"):
+            item_id = f"note {start_item.get_note_id()}"
+        elif hasattr(start_item, "get_image_id"):
+            item_id = f"image {start_item.get_image_id()}"
+        else:
+            item_id = f"item {id(start_item)}"
+
+        self.logger.debug(f"Started connection creation from {item_id}")
 
     def _update_connection_preview(self, mouse_pos: QPointF) -> None:
         """
@@ -1020,20 +1070,25 @@ class WhiteboardCanvas(QGraphicsView):
         )
         end_scene_pos = self.mapToScene(mouse_pos.toPoint())
 
-        # Check if mouse is over a valid target note
+        # Check if mouse is over a valid target item
         item_at_pos = self.scene().itemAt(end_scene_pos, self.transform())
-        target_note = None
+        target_item = None
 
+        # Import needed classes
+        from .note_item import NoteItem
+        from .image_item import ImageItem
+
+        # Allow connections between NoteItem and ImageItem in any direction
         if (
-            isinstance(item_at_pos, NoteItem)
+            isinstance(item_at_pos, (NoteItem, ImageItem))
             and item_at_pos != self._connection_start_note
         ):
             # Check if connection doesn't already exist
             if not self._connection_exists(self._connection_start_note, item_at_pos):
-                target_note = item_at_pos
+                target_item = item_at_pos
 
-        # Update target note highlighting
-        self._update_target_note_highlight(target_note)
+        # Update target item highlighting
+        self._update_target_item_highlight(target_item)
 
         # Create or update preview line
         if not self._connection_preview_line:
@@ -1046,7 +1101,7 @@ class WhiteboardCanvas(QGraphicsView):
             self.scene().addItem(self._connection_preview_line)
 
         # Update preview line style based on whether we have a valid target
-        if target_note:
+        if target_item:
             # Green dashed line when over valid target
             pen = QPen(QColor(50, 150, 50), 3, Qt.PenStyle.DashLine)
             # Emit hint for status bar
@@ -1055,7 +1110,7 @@ class WhiteboardCanvas(QGraphicsView):
             # Gray dashed line when not over valid target
             pen = QPen(Qt.GlobalColor.gray, 2, Qt.PenStyle.DashLine)
             # Emit hint for status bar
-            self.note_hover_hint.emit("🔗 Drag to another note to create connection")
+            self.note_hover_hint.emit("🔗 Drag to another item to create connection")
 
         self._connection_preview_line.setPen(pen)
 
@@ -1067,28 +1122,35 @@ class WhiteboardCanvas(QGraphicsView):
             end_scene_pos.y(),
         )
 
-    def _update_target_note_highlight(self, target_note: NoteItem) -> None:
+    def _update_target_item_highlight(self, target_item) -> None:
         """
-        Update the visual highlighting of the target note during connection creation.
+        Update the visual highlighting of the target item during connection creation.
 
         Args:
-            target_note: Note to highlight as connection target, or None to clear highlight
+            target_item: Item to highlight as connection target, or None to clear highlight
         """
         # Clear previous target highlight
-        if self._connection_target_note and self._connection_target_note != target_note:
+        if self._connection_target_note and self._connection_target_note != target_item:
             self._connection_target_note.setSelected(False)
             self._connection_target_note.update()
 
         # Set new target highlight
-        if target_note and target_note != self._connection_target_note:
-            target_note.setSelected(True)
-            target_note.update()
+        if target_item and target_item != self._connection_target_note:
+            target_item.setSelected(True)
+            target_item.update()
 
-        self._connection_target_note = target_note
+        self._connection_target_note = target_item
+
+    # Legacy compatibility shim for tests expecting note-specific method name
+    def _update_target_note_highlight(self, target_note) -> None:
+        self.logger.debug(
+            "Compatibility: _update_target_note_highlight delegating to _update_target_item_highlight"
+        )
+        self._update_target_item_highlight(target_note)
 
     def _complete_connection_creation(self, mouse_pos: QPointF) -> None:
         """
-        Complete connection creation by finding the target note.
+        Complete connection creation by finding the target item.
 
         Args:
             mouse_pos: Final mouse position in view coordinates
@@ -1103,29 +1165,53 @@ class WhiteboardCanvas(QGraphicsView):
             self._cancel_connection_creation()
             return
 
-        # Find target note
+        # Find target item
         scene_pos = self.mapToScene(mouse_pos.toPoint())
         item_at_pos = self.scene().itemAt(scene_pos, self.transform())
 
+        # Import needed classes
+        from .note_item import NoteItem
+        from .image_item import ImageItem
+
+        # Allow connections between NoteItem and ImageItem in any direction
         if (
-            isinstance(item_at_pos, NoteItem)
+            isinstance(item_at_pos, (NoteItem, ImageItem))
             and item_at_pos != self._connection_start_note
         ):
-            # Create connection between notes
+            # Create connection between items
             if not self._connection_exists(self._connection_start_note, item_at_pos):
                 connection = self._create_connection(
                     self._connection_start_note, item_at_pos
                 )
                 if connection:
+                    # Get item identifiers for logging
+                    start_id = self._get_item_identifier(self._connection_start_note)
+                    end_id = self._get_item_identifier(item_at_pos)
                     self.logger.info(
-                        f"Created connection between notes {self._connection_start_note.get_note_id()} "
-                        f"and {item_at_pos.get_note_id()}"
+                        f"Created connection between {start_id} and {end_id}"
                     )
             else:
-                self.logger.debug("Connection already exists between these notes")
+                self.logger.debug("Connection already exists between these items")
 
         # Clean up connection creation mode
         self._cancel_connection_creation()
+
+    def _get_item_identifier(self, item) -> str:
+        """
+        Get a string identifier for an item.
+
+        Args:
+            item: The item to get an identifier for
+
+        Returns:
+            String identifier for the item
+        """
+        if hasattr(item, "get_note_id"):
+            return f"note {item.get_note_id()}"
+        elif hasattr(item, "get_image_id"):
+            return f"image {item.get_image_id()}"
+        else:
+            return f"item {id(item)}"
 
     def _cancel_connection_creation(self) -> None:
         """Cancel connection creation and clean up."""
@@ -1149,40 +1235,38 @@ class WhiteboardCanvas(QGraphicsView):
         # Reset cursor
         self.setCursor(Qt.CursorShape.ArrowCursor)
 
-    def _connection_exists(self, note1: NoteItem, note2: NoteItem) -> bool:
+    def _connection_exists(self, item1, item2) -> bool:
         """
-        Check if a connection already exists between two notes.
+        Check if a connection already exists between two items.
 
         Args:
-            note1: First note
-            note2: Second note
+            item1: First item (NoteItem or ImageItem)
+            item2: Second item (NoteItem or ImageItem)
 
         Returns:
             True if connection exists, False otherwise
         """
         for connection in self._connections:
             if connection.is_connected_to_note(
-                note1
-            ) and connection.is_connected_to_note(note2):
+                item1
+            ) and connection.is_connected_to_note(item2):
                 return True
         return False
 
-    def _create_connection(
-        self, start_note: NoteItem, end_note: NoteItem
-    ) -> ConnectionItem:
+    def _create_connection(self, start_item, end_item) -> ConnectionItem:
         """
-        Create a new connection between two notes.
+        Create a new connection between two items.
 
         Args:
-            start_note: Starting note
-            end_note: Ending note
+            start_item: Starting item (NoteItem or ImageItem)
+            end_item: Ending item (NoteItem or ImageItem)
 
         Returns:
             The created ConnectionItem, or None if creation failed
         """
         try:
             # Create connection
-            connection = ConnectionItem(start_note, end_note)
+            connection = ConnectionItem(start_item, end_item)
 
             # Add to scene
             self.scene().addItem(connection)
@@ -1236,20 +1320,35 @@ class WhiteboardCanvas(QGraphicsView):
         if connection in self._connections:
             connection.delete_connection()
 
-    def delete_connections_for_note(self, note: NoteItem) -> None:
+    def delete_connections_for_item(self, item) -> None:
         """
-        Delete all connections associated with a note.
+        Delete all connections associated with an item.
 
         Args:
-            note: Note whose connections should be deleted
+            item: Item whose connections should be deleted (NoteItem or ImageItem)
         """
         # Create a copy of the list to avoid modification during iteration
         connections_to_delete = [
-            conn for conn in self._connections if conn.is_connected_to_note(note)
+            conn for conn in self._connections if conn.is_connected_to_note(item)
         ]
 
         for connection in connections_to_delete:
             connection.delete_connection()
+
+        self.logger.debug(
+            f"Deleted {len(connections_to_delete)} connections for {self._get_item_identifier(item)}"
+        )
+
+    def delete_connections_for_note(self, note: NoteItem) -> None:
+        """
+        Delete all connections associated with a note.
+
+        This method is kept for backward compatibility.
+
+        Args:
+            note: Note whose connections should be deleted
+        """
+        self.delete_connections_for_item(note)
 
     def set_connection_mode(self, enabled: bool) -> None:
         """
@@ -1269,8 +1368,12 @@ class WhiteboardCanvas(QGraphicsView):
         super().resizeEvent(event)
 
         # Emit viewport changed signal when view is resized
-        viewport_rect = self.mapToScene(self.rect()).boundingRect()
-        self.viewport_changed.emit(viewport_rect)
+        # Emit viewport changed signal with current scene bounds
+        current_bounds = self.scene().get_content_bounds()
+        self.viewport_changed.emit(current_bounds)
+        self.logger.debug(
+            f"Viewport changed signal emitted with bounds: {current_bounds}"
+        )
 
         self.logger.debug(f"Canvas resized to {event.size()}, viewport updated")
 
@@ -1538,3 +1641,144 @@ class WhiteboardCanvas(QGraphicsView):
     def _on_note_style_changed(self, note_id: str, style: dict) -> None:
         """Handle note style changes."""
         self.logger.debug(f"Note {note_id} style changed: {style}")
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:
+        """
+        Handle drag enter events for file drops.
+
+        Args:
+            event: Drag enter event containing mime data
+        """
+        self.logger.debug("Drag enter event received")
+
+        # Check if the drag contains file URLs
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+
+            # Check if any of the URLs are image files
+            supported_formats = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg"}
+            has_image = False
+
+            for url in urls:
+                if url.isLocalFile():
+                    file_path = url.toLocalFile()
+                    file_extension = (
+                        file_path.lower().split(".")[-1] if "." in file_path else ""
+                    )
+
+                    # Debug logging
+                    self.logger.debug(f"Checking file: {file_path}")
+                    self.logger.debug(f"File extension: '{file_extension}'")
+                    self.logger.debug(
+                        f"Looking for: '.{file_extension}' in {supported_formats}"
+                    )
+
+                    if f".{file_extension}" in supported_formats:
+                        has_image = True
+                        self.logger.debug(f"Found supported image: {file_path}")
+                        break
+                    else:
+                        self.logger.debug(f"Unsupported extension: '.{file_extension}'")
+
+            if has_image:
+                event.acceptProposedAction()
+                self.logger.debug("Drag accepted - contains supported image files")
+                # Show visual feedback
+                self.note_hover_hint.emit(
+                    "📷 Drop image files to add them to the canvas"
+                )
+            else:
+                event.ignore()
+                self.logger.debug("Drag rejected - no supported image files found")
+        else:
+            event.ignore()
+            self.logger.debug("Drag rejected - no file URLs found")
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:
+        """
+        Handle drag move events to provide visual feedback.
+
+        Args:
+            event: Drag move event
+        """
+        # Accept the drag if it was accepted in dragEnterEvent
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event: QDropEvent) -> None:
+        """
+        Handle drop events for image files.
+
+        Args:
+            event: Drop event containing file data
+        """
+        self.logger.info("Drop event received")
+
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+
+            supported_formats = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg"}
+            processed_files = 0
+
+            for url in urls:
+                if url.isLocalFile():
+                    file_path = url.toLocalFile()
+                    file_extension = (
+                        file_path.lower().split(".")[-1] if "." in file_path else ""
+                    )
+
+                    # Debug logging
+                    self.logger.debug(f"Drop - Checking file: {file_path}")
+                    self.logger.debug(f"Drop - File extension: '{file_extension}'")
+                    self.logger.debug(
+                        f"Drop - Looking for: '.{file_extension}' in {supported_formats}"
+                    )
+
+                    if f".{file_extension}" in supported_formats:
+                        try:
+                            self.logger.info(f"Processing dropped image: {file_path}")
+
+                            # Create ImageItem and add to scene
+                            from .image_item import ImageItem
+
+                            # Calculate position for the dropped image
+                            drop_position = self.mapToScene(event.position().toPoint())
+
+                            # Create the image item
+                            image_item = ImageItem(
+                                image_path=file_path, position=drop_position
+                            )
+
+                            # Add to scene (use scene's addItem for proper tracking)
+                            self.scene().addItem(image_item)
+
+                            processed_files += 1
+                            self.logger.info(
+                                f"Successfully processed image: {file_path}"
+                            )
+                        except Exception as e:
+                            self.logger.error(
+                                f"Failed to process image {file_path}: {e}"
+                            )
+                    else:
+                        self.logger.warning(
+                            f"Unsupported file format: {file_path} (extension: '.{file_extension}')"
+                        )
+
+            if processed_files > 0:
+                event.acceptProposedAction()
+                self.note_hover_hint.emit(
+                    f"✅ Added {processed_files} image(s) to canvas"
+                )
+                self.logger.info(
+                    f"Successfully processed {processed_files} image files"
+                )
+            else:
+                event.ignore()
+                self.note_hover_hint.emit("❌ No supported image files found")
+        else:
+            event.ignore()
+            self.logger.debug("Drop rejected - no file URLs found")
+
+        # Clear the hover hint after a moment
+        # TODO: Implement timer to clear hint after delay

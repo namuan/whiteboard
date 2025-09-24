@@ -48,7 +48,7 @@ package: clean ## Run installer
 	@uv run pyinstaller main.spec --clean
 
 install-macosx: package ## Installs application in users Application folder
-	./scripts/install-macosx.sh MeetingBuddy.app
+	./scripts/install-macosx.sh Whiteboard.app
 
 setup: ## One command setup
 	@make install-macosx
