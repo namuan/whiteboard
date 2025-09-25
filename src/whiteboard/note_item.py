@@ -863,6 +863,14 @@ class NoteItem(QGraphicsTextItem):
                         f"_handle_position_has_changed: scene update failed: {e}"
                     )
 
+            # Ensure infinite canvas behavior by expanding scene if needed
+            try:
+                self._handle_scene_expansion()
+            except Exception as e:
+                self.logger.debug(
+                    f"_handle_position_has_changed: expansion failed: {e}"
+                )
+
             self.logger.debug(
                 f"Note {self._note_id} position changed to ({current_pos.x():.2f}, {current_pos.y():.2f})"
             )
@@ -919,6 +927,60 @@ class NoteItem(QGraphicsTextItem):
             )
         except Exception as e:
             self.logger.exception(f"_handle_selection_changed: failed: {e}")
+
+    def _handle_scene_expansion(self) -> None:
+        """Ensure the scene expands when the note moves near its edges.
+
+        Uses the scene's built-in expansion routine when available, with a
+        backwards-compatible manual fallback mirroring ImageItem behavior.
+        """
+        if not self.scene():
+            return
+
+        try:
+            # Prefer central scene expansion utility if present
+            if hasattr(self.scene(), "_check_and_expand_scene"):
+                self.scene()._check_and_expand_scene(self.sceneBoundingRect())
+                return
+
+            # Fallback manual expansion logic
+            self._manual_scene_expansion()
+        except Exception as e:
+            self.logger.debug(f"_handle_scene_expansion: failed: {e}")
+
+    def _manual_scene_expansion(self) -> None:
+        """Manual scene expansion logic (compatibility fallback)."""
+        try:
+            scene_rect = self.scene().sceneRect()
+            item_rect = self.sceneBoundingRect()
+
+            # Threshold and expansion values aligned with scene defaults
+            threshold = 1000
+            expansion = 5000
+
+            new_scene_rect = scene_rect
+            expanded = False
+
+            if item_rect.left() < scene_rect.left() + threshold:
+                new_scene_rect.setLeft(scene_rect.left() - expansion)
+                expanded = True
+            if item_rect.right() > scene_rect.right() - threshold:
+                new_scene_rect.setRight(scene_rect.right() + expansion)
+                expanded = True
+            if item_rect.top() < scene_rect.top() + threshold:
+                new_scene_rect.setTop(scene_rect.top() - expansion)
+                expanded = True
+            if item_rect.bottom() > scene_rect.bottom() - threshold:
+                new_scene_rect.setBottom(scene_rect.bottom() + expansion)
+                expanded = True
+
+            if expanded:
+                self.scene().setSceneRect(new_scene_rect)
+                self.logger.debug(
+                    f"Scene expanded to {new_scene_rect} due to NoteItem movement"
+                )
+        except Exception as e:
+            self.logger.debug(f"_manual_scene_expansion: failed: {e}")
 
     def _on_text_changed(self) -> None:
         """Handle text content changes during editing."""
