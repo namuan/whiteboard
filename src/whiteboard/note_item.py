@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
     QStyle,
     QMenu,
     QGraphicsSceneContextMenuEvent,
+    QGraphicsScene,
 )
 
 from .utils.logging_config import get_logger
@@ -76,6 +77,8 @@ class NoteItem(QGraphicsTextItem):
         self._note_id = id(self)  # Unique identifier
         self._is_editing = False
         self._original_text = text
+        # Track geometry updates to adjust painting behavior and clearing
+        self._is_geometry_updating = False
 
         # Get default styling from style manager
         from .style_manager import get_style_manager
@@ -151,37 +154,121 @@ class NoteItem(QGraphicsTextItem):
 
     def _update_geometry(self) -> None:
         """Update the note geometry based on content with min/max width constraints."""
-        # Determine sizing constraints from style
-        padding = self._style["padding"]
-        min_width = self._style["min_width"]
-        # Provide a sensible default if not present in persisted styles
-        max_width = self._style.get("max_width", 320)
-
-        # Calculate the natural (unwrapped) content width by disabling wrapping
-        # Temporarily disable wrapping to measure intrinsic width
-        self.setTextWidth(-1)
-        natural_text_rect = super().boundingRect()
-        natural_width = natural_text_rect.width()
-
-        # Compute desired content area width (without padding)
-        min_content_width = max(min_width - 2 * padding, 1)
-        max_content_width = max(max_width - 2 * padding, min_content_width)
-        desired_content_width = natural_width
-        if desired_content_width < min_content_width:
-            desired_content_width = min_content_width
-        if desired_content_width > max_content_width:
-            desired_content_width = max_content_width
-
-        # Apply clamped width for wrapping and layout
-        self.setTextWidth(desired_content_width)
-
-        # Logging for diagnostics
+        # Snapshot previous bounds for diagnostics and clearing logic
+        old_item_rect = self.boundingRect()
         self.logger.debug(
-            f"_update_geometry: natural_width={natural_width:.2f}, "
-            f"min_content_width={min_content_width}, max_content_width={max_content_width}, "
-            f"applied_content_width={desired_content_width}, padding={padding}, "
-            f"min_width={min_width}, max_width={max_width}"
+            f"_update_geometry: old_item_size=({old_item_rect.width():.2f}x{old_item_rect.height():.2f})"
         )
+
+        # Flag start of geometry update (affects painting)
+        self._is_geometry_updating = True
+
+        try:
+            # Notify scene that geometry is about to change
+            self.prepareGeometryChange()
+
+            # Determine sizing constraints from style
+            padding = self._style["padding"]
+            min_width = self._style["min_width"]
+            # Provide a sensible default if not present in persisted styles
+            max_width = self._style.get("max_width", 320)
+
+            # Temporarily disable wrapping to measure intrinsic width
+            self.setTextWidth(-1)
+            natural_text_rect = super().boundingRect()
+            natural_width = natural_text_rect.width()
+
+            # Compute desired content area width (without padding)
+            min_content_width = max(min_width - 2 * padding, 1)
+            max_content_width = max(max_width - 2 * padding, min_content_width)
+            desired_content_width = natural_width
+            if desired_content_width < min_content_width:
+                desired_content_width = min_content_width
+            if desired_content_width > max_content_width:
+                desired_content_width = max_content_width
+
+            # Apply clamped width for wrapping and layout
+            self.setTextWidth(desired_content_width)
+
+            # Logging for diagnostics
+            new_item_rect = self.boundingRect()
+            self.logger.debug(
+                f"_update_geometry: natural_width={natural_width:.2f}, "
+                f"min_content_width={min_content_width}, max_content_width={max_content_width}, "
+                f"applied_content_width={desired_content_width}, padding={padding}, "
+                f"min_width={min_width}, max_width={max_width}, "
+                f"new_item_size=({new_item_rect.width():.2f}x{new_item_rect.height():.2f})"
+            )
+
+            # If attached to a scene, invalidate the appropriate regions to avoid trailing artifacts
+            if self.scene() is not None:
+                try:
+                    # Determine if the note is shrinking in either dimension
+                    is_shrinking = (
+                        new_item_rect.width() < old_item_rect.width()
+                        or new_item_rect.height() < old_item_rect.height()
+                    )
+
+                    old_scene_rect = self.mapRectToScene(old_item_rect)
+                    new_scene_rect = self.sceneBoundingRect()
+
+                    self.logger.debug(
+                        f"_update_geometry: is_shrinking={is_shrinking}, "
+                        f"old_item_rect={old_item_rect}, new_item_rect={new_item_rect}, "
+                        f"old_scene_rect={old_scene_rect}, new_scene_rect={new_scene_rect}"
+                    )
+
+                    if is_shrinking:
+                        # When shrinking, clear the old larger area in scene coords
+                        clear_scene_rect = old_scene_rect.adjusted(-20, -20, 20, 20)
+
+                        # Invalidate background and item layers to ensure full redraw
+                        self.scene().invalidate(
+                            clear_scene_rect, QGraphicsScene.SceneLayer.BackgroundLayer
+                        )
+                        self.scene().invalidate(
+                            clear_scene_rect, QGraphicsScene.SceneLayer.ItemLayer
+                        )
+
+                        # Force immediate scene update of the cleared area
+                        self.scene().update(clear_scene_rect)
+
+                        # Also force view updates/repaints for the affected area
+                        for view in self.scene().views():
+                            view_rect = view.mapFromScene(
+                                clear_scene_rect
+                            ).boundingRect()
+                            view.update(view_rect)
+                            view.repaint(view_rect)
+
+                        self.logger.debug(
+                            f"_update_geometry: shrink invalidation applied on {clear_scene_rect} across {len(self.scene().views())} views"
+                        )
+                    else:
+                        # For growth, invalidate the union area to refresh newly exposed region
+                        combined_scene_rect = old_scene_rect.united(new_scene_rect)
+                        self.scene().invalidate(combined_scene_rect)
+                        self.scene().update(combined_scene_rect)
+
+                        for view in self.scene().views():
+                            view_rect = view.mapFromScene(
+                                combined_scene_rect
+                            ).boundingRect()
+                            view.update(view_rect)
+
+                        self.logger.debug(
+                            f"_update_geometry: grow invalidation applied on {combined_scene_rect} across {len(self.scene().views())} views"
+                        )
+
+                    # Always trigger item update
+                    self.update()
+                except Exception as e:
+                    self.logger.exception(
+                        f"_update_geometry: scene invalidation failed: {e}"
+                    )
+        finally:
+            # Ensure flag reset even if exceptions occur
+            self._is_geometry_updating = False
 
     def boundingRect(self) -> QRectF:
         """
@@ -223,6 +310,14 @@ class NoteItem(QGraphicsTextItem):
 
         # Setup painter
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        # Clear the background slightly larger than rect during geometry updates to avoid trails
+        if getattr(self, "_is_geometry_updating", False):
+            painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+            painter.fillRect(rect.adjusted(-5, -5, 5, 5), QColor(0, 0, 0, 0))
+            painter.setCompositionMode(
+                QPainter.CompositionMode.CompositionMode_SourceOver
+            )
 
         # Draw background
         background_color = self._style["background_color"]
@@ -627,40 +722,17 @@ class NoteItem(QGraphicsTextItem):
         Returns:
             Processed value
         """
-        if change == QGraphicsTextItem.GraphicsItemChange.ItemPositionHasChanged:
-            # Emit position changed signal
-            new_position = QPointF(value)
-            self.position_changed.emit(new_position)
-
-            # Trigger scene expansion check if item is in a scene
-            if self.scene():
-                # Check if scene needs expansion for new position
-                item_rect = self.boundingRect().translated(new_position)
-                if hasattr(self.scene(), "_check_and_expand_scene"):
-                    self.scene()._check_and_expand_scene(item_rect)
-
-                # Add logging to debug minimap refresh issue
-                self.logger.debug(
-                    f"Note {self._note_id} triggering minimap update after position change"
-                )
-
-                # Force minimap update by invalidating the scene
-                self.scene().invalidate()
-
-                # Also try directly calling the navigation panel update
-                if hasattr(self.scene(), "parent") and hasattr(
-                    self.scene().parent(), "_navigation_panel"
-                ):
-                    self.logger.debug(
-                        f"Note {self._note_id} directly scheduling minimap update"
-                    )
-                    self.scene().parent()._navigation_panel.schedule_minimap_update()
-
-            self.logger.debug(f"Note {self._note_id} moved to {new_position}")
-        elif change == QGraphicsTextItem.GraphicsItemChange.ItemPositionChange:
-            # Force scene update during position changes to prevent trails
-            if self.scene():
-                self.scene().update()
+        try:
+            if change == QGraphicsTextItem.GraphicsItemChange.ItemPositionHasChanged:
+                self._handle_position_has_changed(QPointF(value))
+            elif change == QGraphicsTextItem.GraphicsItemChange.ItemPositionChange:
+                self._handle_position_change()
+            elif change == QGraphicsTextItem.GraphicsItemChange.ItemSceneHasChanged:
+                self._handle_scene_has_changed()
+            elif change == QGraphicsTextItem.GraphicsItemChange.ItemSelectedHasChanged:
+                self._handle_selection_changed()
+        except Exception as e:
+            self.logger.exception(f"itemChange: error handling change {change}: {e}")
 
         return super().itemChange(change, value)
 
@@ -716,6 +788,137 @@ class NoteItem(QGraphicsTextItem):
             self.editing_finished.emit()
 
             self.logger.debug(f"Note {self._note_id} exited edit mode")
+
+    def _on_text_changed(self) -> None:
+        """Handle text content changes during editing."""
+        if self._is_editing:
+            # Update geometry to accommodate new text
+            self._update_geometry()
+
+            # Emit content changed signal
+            current_text = self.toPlainText()
+            self.content_changed.emit(current_text)
+
+    # NOTE: duplicate set_style/get_style removed to resolve F811 redefinition errors.
+
+    # NOTE: duplicate implementations removed to resolve F811 redefinition errors.
+    def _copy_note_content(self) -> None:
+        """Copy the note's text content to the system clipboard."""
+        from PyQt6.QtWidgets import QApplication
+
+        clipboard = QApplication.clipboard()
+        clipboard.setText(self.get_text())
+
+        self.hover_started.emit("📋 Note content copied to clipboard!")
+        self.logger.debug(f"Copied content of note {self._note_id} to clipboard")
+
+    def _request_centralized_delete(self) -> None:
+        """Ask the canvas to delete this note via centralized confirmation dialog."""
+        try:
+            if self.scene() and self.scene().views():
+                view = self.scene().views()[0]
+                canvas = getattr(view, "_canvas", None)
+                if canvas and hasattr(canvas, "delete_items_with_confirmation"):
+                    canvas.delete_items_with_confirmation([self])
+                    return
+        except Exception as e:
+            self.logger.error(f"Failed to route note deletion to canvas: {e}")
+        # Fallback to legacy behavior
+        self._delete_note()
+
+    def _delete_note(self) -> None:
+        """Delete this note from the scene without prompting (centralized confirmation is handled by Canvas)."""
+        # Delete connections first
+        if hasattr(self.scene(), "delete_connections_for_note"):
+            self.scene().delete_connections_for_note(self)
+
+        # Remove from scene
+        if self.scene():
+            self.scene().removeItem(self)
+
+        self.logger.debug(f"Deleted note {self._note_id} (no per-item prompt)")
+
+    def _handle_position_has_changed(self, new_position: QPointF) -> None:
+        """Handle logic after the position has changed.
+
+        This emits the position_changed signal (used by connections/canvas) and
+        triggers a lightweight scene update to avoid visual trails.
+        """
+        try:
+            # Prefer the actual current position to avoid QVariant conversion quirks
+            current_pos = self.pos()
+            # Fall back to provided value if needed
+            if current_pos is None and new_position is not None:
+                current_pos = new_position
+
+            # Emit position changed for dependents (e.g., connections)
+            self.position_changed.emit(current_pos)
+
+            # Nudge the scene to refresh around the item to prevent artifacts
+            if self.scene() is not None:
+                try:
+                    self.scene().update(self.sceneBoundingRect().adjusted(-2, -2, 2, 2))
+                except Exception as e:
+                    self.logger.debug(
+                        f"_handle_position_has_changed: scene update failed: {e}"
+                    )
+
+            self.logger.debug(
+                f"Note {self._note_id} position changed to ({current_pos.x():.2f}, {current_pos.y():.2f})"
+            )
+        except Exception as e:
+            self.logger.exception(f"_handle_position_has_changed: failed: {e}")
+
+    def _handle_position_change(self) -> None:
+        """Handle logic while the position is changing (pre-commit)."""
+        try:
+            # Currently we only log; clamping or constraints can be added here later
+            tentative_pos = self.pos()
+            self.logger.debug(
+                f"Note {self._note_id} position changing (tentative) to ({tentative_pos.x():.2f}, {tentative_pos.y():.2f})"
+            )
+        except Exception as e:
+            self.logger.exception(f"_handle_position_change: failed: {e}")
+
+    def _handle_scene_has_changed(self) -> None:
+        """Handle when the note's scene association changes."""
+        try:
+            scene_info = "attached" if self.scene() is not None else "detached"
+            self.logger.debug(f"Note {self._note_id} scene has changed: {scene_info}")
+
+            # When attached to a scene, ensure geometry and visuals are fresh
+            if self.scene() is not None:
+                try:
+                    self._update_geometry()
+                    self.update()
+                    # Minor refresh around the item
+                    self.scene().update(self.sceneBoundingRect().adjusted(-4, -4, 4, 4))
+                except Exception as e:
+                    self.logger.debug(f"_handle_scene_has_changed: refresh failed: {e}")
+        except Exception as e:
+            self.logger.exception(f"_handle_scene_has_changed: failed: {e}")
+
+    def _handle_selection_changed(self) -> None:
+        """Handle selection state changes for the note."""
+        try:
+            selected = self.isSelected()
+
+            # Update cursor to give feedback
+            if selected:
+                # Slightly emphasize selection via immediate repaint
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            else:
+                # Open hand when hoverable but not selected
+                self.setCursor(Qt.CursorShape.OpenHandCursor)
+
+            # Trigger repaint to reflect selection highlight in paint()
+            self.update()
+
+            self.logger.debug(
+                f"Note {self._note_id} selection changed to {'selected' if selected else 'deselected'}"
+            )
+        except Exception as e:
+            self.logger.exception(f"_handle_selection_changed: failed: {e}")
 
     def _on_text_changed(self) -> None:
         """Handle text content changes during editing."""

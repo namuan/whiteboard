@@ -339,8 +339,17 @@ class WhiteboardCanvas(QGraphicsView):
         # Enable mouse tracking for hover effects
         self.setMouseTracking(True)
 
-        # Set focus policy to receive keyboard events
-        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        # Viewport update strategy and caching to avoid trail artifacts at low zoom
+        try:
+            self.setViewportUpdateMode(
+                QGraphicsView.ViewportUpdateMode.BoundingRectViewportUpdate
+            )
+            self.setCacheMode(QGraphicsView.CacheModeFlag.CacheNone)
+            self.logger.debug(
+                "WhiteboardCanvas viewport mode set to BoundingRectViewportUpdate and cache disabled"
+            )
+        except Exception as e:
+            self.logger.warning(f"Failed to configure viewport/cache settings: {e}")
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         """
@@ -996,6 +1005,9 @@ class WhiteboardCanvas(QGraphicsView):
         # Update zoom factor
         self._zoom_factor = zoom_factor
 
+        # Adapt viewport update mode based on zoom to prevent artifacts
+        self._update_viewport_mode_for_zoom()
+
         # Maintain center point after zoom for consistent experience
         center_after = self.mapToScene(self.rect().center())
         delta = center_after - center_before
@@ -1017,6 +1029,23 @@ class WhiteboardCanvas(QGraphicsView):
         self.logger.debug(
             f"Zoom applied: {self._zoom_factor:.3f}x (scale factor: {scale_factor:.3f})"
         )
+
+    def _update_viewport_mode_for_zoom(self) -> None:
+        """Adapt the viewport update mode based on current zoom factor to reduce redraw trails."""
+        try:
+            if self._zoom_factor <= 0.3:
+                desired = QGraphicsView.ViewportUpdateMode.FullViewportUpdate
+            else:
+                desired = QGraphicsView.ViewportUpdateMode.BoundingRectViewportUpdate
+
+            current = self.viewportUpdateMode()
+            if current != desired:
+                self.setViewportUpdateMode(desired)
+                self.logger.debug(
+                    f"ViewportUpdateMode changed to {desired.name} (zoom={self._zoom_factor:.2f})"
+                )
+        except Exception as e:
+            self.logger.warning(f"Failed to adapt viewport mode: {e}")
 
     def pan(self, dx: float, dy: float) -> None:
         """

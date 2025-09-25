@@ -178,6 +178,14 @@ class ConnectionItem(QGraphicsPathItem):
                     self.logger.debug(
                         f"Failed connecting direct style_changed for {label}: {e}"
                     )
+            if hasattr(item, "content_changed"):
+                try:
+                    item.content_changed.connect(self._on_endpoint_content_changed)
+                    self.logger.debug(f"Connected direct content_changed for {label}")
+                except Exception as e:
+                    self.logger.debug(
+                        f"Failed connecting direct content_changed for {label}: {e}"
+                    )
 
             # Signals exposed via a nested QObject, e.g., ImageItem.signals
             nested = getattr(item, "signals", None)
@@ -200,9 +208,31 @@ class ConnectionItem(QGraphicsPathItem):
                         self.logger.debug(
                             f"Failed connecting nested style_changed for {label}: {e}"
                         )
+                if hasattr(nested, "content_changed"):
+                    try:
+                        nested.content_changed.connect(
+                            self._on_endpoint_content_changed
+                        )
+                        self.logger.debug(
+                            f"Connected nested content_changed for {label}"
+                        )
+                    except Exception as e:
+                        self.logger.debug(
+                            f"Failed connecting nested content_changed for {label}: {e}"
+                        )
 
         _connect_signals_for(self._start_item, "start_item")
         _connect_signals_for(self._end_item, "end_item")
+
+    def _on_endpoint_content_changed(self, _text_or_payload: Any) -> None:
+        """Handle content changes on endpoints to recompute path when their bounds change."""
+        try:
+            self.logger.debug(
+                f"Endpoint content changed; recomputing connection path for {self._connection_id}"
+            )
+            self.update_path()
+        except Exception as e:
+            self.logger.error(f"Error updating path on endpoint content change: {e}")
 
     def delete_connection(self) -> None:
         """Delete this connection from the scene."""
@@ -292,13 +322,21 @@ class ConnectionItem(QGraphicsPathItem):
         # Create the path
         path = self._create_connection_path(start_point, end_point)
 
+        # Prepare geometry change to ensure correct invalidation region and avoid trails
+        try:
+            self.prepareGeometryChange()
+        except Exception as e:
+            self.logger.debug(f"prepareGeometryChange failed (non-fatal): {e}")
+
         # Set the path
         self.setPath(path)
 
         # Update pen style
         self._update_pen_style()
 
-        self.logger.debug(f"Updated connection path from {start_point} to {end_point}")
+        # Debug bounding rect after update
+        br = self.boundingRect()
+        self.logger.debug(f"ConnectionItem boundingRect after update: {br}")
 
     def _calculate_connection_points(self) -> tuple[QPointF, QPointF]:
         """
