@@ -4,6 +4,10 @@
 !assets/
 !src/
 !tests/
+!scripts/
+
+!.trae/
+!.kiro/
 
 # Unignore files
 !.gitignore
@@ -14,6 +18,7 @@
 !.pre-commit-config.yaml
 !main.spec
 !install.command
+!run_app.py
 
 # Python
 __pycache__/

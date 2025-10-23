@@ -1,0 +1,16 @@
+{
+  "enabled": true,
+  "name": "Make Check Runner",
+  "description": "Automatically runs `make check` to execute code analysis tools when Python source files or configuration files are modified",
+  "version": "1",
+  "when": {
+    "type": "fileCreated",
+    "patterns": [
+      "src/**/*.py"
+    ]
+  },
+  "then": {
+    "type": "askAgent",
+    "prompt": "Run `make check` to execute code analysis tools on the updated codebase"
+  }
+}
