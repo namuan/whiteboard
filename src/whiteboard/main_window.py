@@ -330,14 +330,18 @@ class MainWindow(QMainWindow):
         undo_action.setShortcut(QKeySequence.StandardKey.Undo)
         undo_action.setStatusTip("Undo the last action")
         undo_action.triggered.connect(self._on_undo)
+        undo_action.setEnabled(False)
         edit_menu.addAction(undo_action)
+        self._undo_action = undo_action
 
         # Redo action
         redo_action = QAction("&Redo", self)
         redo_action.setShortcut(QKeySequence.StandardKey.Redo)
         redo_action.setStatusTip("Redo the last undone action")
         redo_action.triggered.connect(self._on_redo)
+        redo_action.setEnabled(False)
         edit_menu.addAction(redo_action)
+        self._redo_action = redo_action
 
         edit_menu.addSeparator()
 
@@ -598,14 +602,22 @@ class MainWindow(QMainWindow):
         # Connect canvas zoom changes to status bar updates
         self._canvas.zoom_changed.connect(self._on_zoom_changed)
         self._canvas.pan_changed.connect(self._on_pan_changed)
-
+        # Connect undo/redo enablement
+        try:
+            stack = self._canvas.get_command_stack()
+            stack.can_undo_changed.connect(
+                lambda enabled: self._undo_action.setEnabled(enabled)
+            )
+            stack.can_redo_changed.connect(
+                lambda enabled: self._redo_action.setEnabled(enabled)
+            )
+        except Exception as e:
+            self.logger.debug(f"Failed to bind undo/redo actions to stack: {e}")
         # Connect note creation signals
         self._canvas.note_created.connect(self._on_note_created)
-
         # Connect note hover signals for user hints
         self._canvas.note_hover_hint.connect(self._on_note_hover_hint)
         self._canvas.note_hover_ended.connect(self._on_note_hover_ended)
-
         # Connect scene modification signals for auto-save
         self._scene.changed.connect(self._on_scene_changed)
 
@@ -938,12 +950,20 @@ class MainWindow(QMainWindow):
     def _on_undo(self) -> None:
         """Handle Undo action."""
         self.logger.info("Undo action triggered")
-        # TODO: Implement in later tasks
+        try:
+            self._canvas.undo()
+            self.statusBar().showMessage("Undid last action", 2000)
+        except Exception as e:
+            self.logger.error(f"Undo failed: {e}")
 
     def _on_redo(self) -> None:
         """Handle Redo action."""
         self.logger.info("Redo action triggered")
-        # TODO: Implement in later tasks
+        try:
+            self._canvas.redo()
+            self.statusBar().showMessage("Redid last action", 2000)
+        except Exception as e:
+            self.logger.error(f"Redo failed: {e}")
 
     def _on_cut(self) -> None:
         """Handle Cut action."""

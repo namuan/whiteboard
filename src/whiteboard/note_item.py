@@ -408,6 +408,11 @@ class NoteItem(QGraphicsTextItem):
 
             # Store original position for drag detection
             self._drag_start_position = event.pos()
+            # Store original scene position for undoable move
+            try:
+                self._drag_start_scene_pos = self.pos()
+            except Exception:
+                self._drag_start_scene_pos = self.pos()
 
         super().mousePressEvent(event)
 
@@ -433,6 +438,16 @@ class NoteItem(QGraphicsTextItem):
         if event.button() == Qt.MouseButton.LeftButton:
             # Reset cursor to open hand when hovering
             self.setCursor(Qt.CursorShape.OpenHandCursor)
+            try:
+                # On release, if position changed, record a move command via canvas
+                old_pos = getattr(self, "_drag_start_scene_pos", self.pos())
+                new_pos = self.pos()
+                if self.scene() and self.scene().views():
+                    view = self.scene().views()[0]
+                    if hasattr(view, "record_note_move"):
+                        view.record_note_move(self, old_pos, new_pos)
+            except Exception as e:
+                self.logger.debug(f"Failed to record note move on release: {e}")
 
         super().mouseReleaseEvent(event)
 
@@ -784,6 +799,19 @@ class NoteItem(QGraphicsTextItem):
             # Emit signals if content changed
             if current_text != self._original_text:
                 self.content_changed.emit(current_text)
+                try:
+                    # Record text update as a command via canvas
+                    if self.scene() and self.scene().views():
+                        view = self.scene().views()[0]
+                        from ..commands.note_commands import UpdateNoteTextCommand  # type: ignore
+
+                        cmd = UpdateNoteTextCommand(
+                            self, self._original_text, current_text
+                        )
+                        if hasattr(view, "execute_command"):
+                            view.execute_command(cmd)
+                except Exception as e:
+                    self.logger.debug(f"Failed to record text update command: {e}")
 
             self.editing_finished.emit()
 

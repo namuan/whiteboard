@@ -25,6 +25,12 @@ from .utils.logging_config import get_logger
 from .note_item import NoteItem
 from .connection_item import ConnectionItem
 
+# Command system imports
+from .commands.stack import UndoRedoStack
+from .commands.note_commands import CreateNoteCommand, MoveNoteCommand
+from .commands.connection_commands import CreateConnectionCommand
+from .commands.image_commands import AddImageCommand
+
 
 class WhiteboardScene(QGraphicsScene):
     """
@@ -289,6 +295,9 @@ class WhiteboardCanvas(QGraphicsView):
         # Store scene reference
         self._scene = scene
 
+        # Initialize command stack
+        self._command_stack = UndoRedoStack()
+
         # Connect to scene signals to handle notes added from other sources
         self._scene.item_added.connect(self._on_item_added_to_scene)
 
@@ -318,6 +327,36 @@ class WhiteboardCanvas(QGraphicsView):
         self._connections = []
 
         self.logger.info("WhiteboardCanvas initialized")
+
+    def execute_command(self, command) -> None:
+        """Execute a command via the undo/redo stack with logging."""
+        try:
+            self._command_stack.push_and_execute(command)
+        except Exception as e:
+            self.logger.error(f"Failed to execute command: {e}")
+
+    def undo(self) -> None:
+        """Undo last command."""
+        self._command_stack.undo()
+
+    def redo(self) -> None:
+        """Redo last undone command."""
+        self._command_stack.redo()
+
+    def get_command_stack(self):
+        """Return the undo/redo stack instance."""
+        return self._command_stack
+
+    def record_note_move(
+        self, note: NoteItem, old_pos: QPointF, new_pos: QPointF
+    ) -> None:
+        """Record a note movement as a single command."""
+        try:
+            if old_pos != new_pos:
+                cmd = MoveNoteCommand(note, old_pos, new_pos)
+                self.execute_command(cmd)
+        except Exception as e:
+            self.logger.error(f"Failed to record note move: {e}")
 
     def _setup_view(self) -> None:
         """Configure view properties and settings."""
@@ -509,33 +548,17 @@ class WhiteboardCanvas(QGraphicsView):
 
     def _create_note_at_position(self, position: QPointF) -> NoteItem:
         """
-        Create a new note at the specified position.
-
-        Args:
-            position: Scene position where the note should be created
-
-        Returns:
-            The newly created NoteItem
+        Create a new note at the specified position using the command system.
         """
-        # Create new note
-        note = NoteItem("", position)
-
-        # Connect note signals for user feedback
-        note.hover_started.connect(self._on_note_hover_started)
-        note.hover_ended.connect(self._on_note_hover_ended)
-
-        # Add to scene
-        self.scene().addItem(note)
-
-        # Automatically enter edit mode for new notes
-        note.setFocus()
-        note.enter_edit_mode()
-
-        # Emit signal
-        self.note_created.emit(note)
-
-        self.logger.info(f"Created new note at position {position}")
-
+        cmd = CreateNoteCommand(self._scene, self, position, "")
+        self.execute_command(cmd)
+        note = getattr(cmd, "_note", None)
+        if note:
+            # Keep previous UX of entering edit mode
+            note.setFocus()
+            note.enter_edit_mode()
+            # Emit canvas-level signal for tests/integration
+            self.note_created.emit(note)
         return note
 
     def _on_note_hover_started(self, hint_text: str) -> None:
@@ -710,17 +733,15 @@ class WhiteboardCanvas(QGraphicsView):
             self.logger.debug("Centralized delete canceled by user")
             return True  # handled
 
-        # Perform deletions
-        deleted_connections = self._delete_connections(connections)
-        deleted_notes = self._delete_notes(notes)
-        deleted_images = self._delete_images(images)
+        # Perform deletion via command system
+        try:
+            from .commands.delete_commands import DeleteItemsCommand
 
-        self.logger.info(
-            "Centralized delete completed: %d notes, %d connections, %d images",
-            deleted_notes,
-            deleted_connections,
-            deleted_images,
-        )
+            cmd = DeleteItemsCommand(self._scene, self, notes + connections + images)
+            self.execute_command(cmd)
+            self.logger.info("Centralized delete executed via command system")
+        except Exception as e:
+            self.logger.error(f"Failed to execute delete command: {e}")
         return True
 
     # ---- Centralized deletion helpers (reduced complexity) ----
@@ -1346,16 +1367,11 @@ class WhiteboardCanvas(QGraphicsView):
         ):
             # Create connection between items
             if not self._connection_exists(self._connection_start_note, item_at_pos):
-                connection = self._create_connection(
-                    self._connection_start_note, item_at_pos
+                cmd = CreateConnectionCommand(
+                    self._scene, self, self._connection_start_note, item_at_pos
                 )
-                if connection:
-                    # Get item identifiers for logging
-                    start_id = self._get_item_identifier(self._connection_start_note)
-                    end_id = self._get_item_identifier(item_at_pos)
-                    self.logger.info(
-                        f"Created connection between {start_id} and {end_id}"
-                    )
+                self.execute_command(cmd)
+                self.logger.info("Created connection via command")
             else:
                 self.logger.debug("Connection already exists between these items")
 
@@ -1632,31 +1648,15 @@ class WhiteboardCanvas(QGraphicsView):
         self, scene_pos: QPointF, text: str = "New Note"
     ) -> NoteItem:
         """
-        Create a new note at the specified scene position.
-
-        Args:
-            scene_pos: Position in scene coordinates
-            text: Initial text for the note
-
-        Returns:
-            The newly created NoteItem
+        Create a new note at the specified scene position using the command system.
         """
-        note = NoteItem(text, scene_pos)
-        self._scene.addItem(note)
-
-        # Connect note signals
-        self._connect_note_signals(note)
-
-        # Emit signal
-        self.note_created.emit(note)
-
-        # Enter edit mode immediately
-        note.enter_edit_mode()
-
-        self.logger.info(
-            f"Created note at position ({scene_pos.x():.1f}, {scene_pos.y():.1f})"
-        )
-
+        cmd = CreateNoteCommand(self._scene, self, scene_pos, text)
+        self.execute_command(cmd)
+        note = getattr(cmd, "_note", None)
+        if note:
+            note.enter_edit_mode()
+            # Emit canvas-level signal for tests/integration
+            self.note_created.emit(note)
         return note
 
     def _populate_canvas_template_menu(
@@ -1902,26 +1902,12 @@ class WhiteboardCanvas(QGraphicsView):
 
                     if f".{file_extension}" in supported_formats:
                         try:
-                            self.logger.info(f"Processing dropped image: {file_path}")
-
-                            # Create ImageItem and add to scene
-                            from .image_item import ImageItem
-
-                            # Calculate position for the dropped image
                             drop_position = self.mapToScene(event.position().toPoint())
-
-                            # Create the image item
-                            image_item = ImageItem(
-                                image_path=file_path, position=drop_position
+                            cmd = AddImageCommand(
+                                self._scene, self, file_path, drop_position
                             )
-
-                            # Add to scene (use scene's addItem for proper tracking)
-                            self.scene().addItem(image_item)
-
+                            self.execute_command(cmd)
                             processed_files += 1
-                            self.logger.info(
-                                f"Successfully processed image: {file_path}"
-                            )
                         except Exception as e:
                             self.logger.error(
                                 f"Failed to process image {file_path}: {e}"
