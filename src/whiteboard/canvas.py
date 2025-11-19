@@ -1787,16 +1787,23 @@ class WhiteboardCanvas(QGraphicsView):
             note: The note item to connect signals for
         """
         # Connect note signals if they exist
-        if hasattr(note, "text_changed"):
-            note.text_changed.connect(self._on_note_text_changed)
+        if hasattr(note, "content_changed"):
+            note.content_changed.connect(self._on_note_text_changed)
+            self.logger.debug("Connected note content_changed signal")
         if hasattr(note, "position_changed"):
             note.position_changed.connect(self._on_note_position_changed)
+            self.logger.debug("Connected note position_changed signal")
         if hasattr(note, "style_changed"):
             note.style_changed.connect(self._on_note_style_changed)
+            self.logger.debug("Connected note style_changed signal")
 
-    def _on_note_text_changed(self, note_id: str, text: str) -> None:
+    def _on_note_text_changed(self, text: str) -> None:
         """Handle note text changes."""
-        self.logger.debug(f"Note {note_id} text changed: {text[:50]}...")
+        try:
+            preview = text[:50] if text is not None else ""
+            self.logger.debug(f"Note text changed: {preview}...")
+        except Exception as e:
+            self.logger.debug(f"_on_note_text_changed logging failed: {e}")
 
     def _on_note_position_changed(self, position) -> None:
         """Handle note position changes."""
@@ -1804,9 +1811,12 @@ class WhiteboardCanvas(QGraphicsView):
             f"Note position changed to ({position.x():.1f}, {position.y():.1f})"
         )
 
-    def _on_note_style_changed(self, note_id: str, style: dict) -> None:
+    def _on_note_style_changed(self, style: dict) -> None:
         """Handle note style changes."""
-        self.logger.debug(f"Note {note_id} style changed: {style}")
+        try:
+            self.logger.debug(f"Note style changed: {style}")
+        except Exception as e:
+            self.logger.debug(f"_on_note_style_changed logging failed: {e}")
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         """
