@@ -18,8 +18,15 @@ from PyQt6.QtGui import (
     QDragEnterEvent,
     QDragMoveEvent,
     QDropEvent,
+    QPixmap,
 )
-from PyQt6.QtWidgets import QGraphicsScene, QGraphicsView, QGraphicsItem, QMenu
+from PyQt6.QtWidgets import (
+    QGraphicsScene,
+    QGraphicsView,
+    QGraphicsItem,
+    QMenu,
+    QApplication,
+)
 
 from .utils.logging_config import get_logger
 from .note_item import NoteItem
@@ -663,31 +670,20 @@ class WhiteboardCanvas(QGraphicsView):
         return False
 
     def _handle_context_menu_shortcuts(self, key: int, modifiers) -> bool:
-        """
-        Handle context menu related keyboard shortcuts.
-
-        Args:
-            key: Key code
-            modifiers: Keyboard modifiers
-
-        Returns:
-            True if shortcut was handled, False otherwise
-        """
-        # Delete key - delete selected items
-        if key == Qt.Key.Key_Delete or key == Qt.Key.Key_Backspace:
+        """Handle context menu shortcuts."""
+        if key in (Qt.Key.Key_Delete, Qt.Key.Key_Backspace):
             return self._handle_delete_shortcut()
 
-        # Ctrl+C - Copy selected note content
-        if (modifiers & Qt.KeyboardModifier.ControlModifier) and key == Qt.Key.Key_C:
-            return self._handle_copy_shortcut()
-
-        # Ctrl+A - Select all items
-        if (modifiers & Qt.KeyboardModifier.ControlModifier) and key == Qt.Key.Key_A:
-            return self._handle_select_all_shortcut()
-
-        # Ctrl+N - Create new note at center
-        if (modifiers & Qt.KeyboardModifier.ControlModifier) and key == Qt.Key.Key_N:
-            return self._handle_new_note_shortcut()
+        ctrl = Qt.KeyboardModifier.ControlModifier
+        if (modifiers & ctrl) == ctrl:
+            if key == Qt.Key.Key_C:
+                return self._handle_copy_shortcut()
+            if key == Qt.Key.Key_V:
+                return self._handle_paste_shortcut()
+            if key == Qt.Key.Key_A:
+                return self._handle_select_all_shortcut()
+            if key == Qt.Key.Key_N:
+                return self._handle_new_note_shortcut()
 
         return False
 
@@ -955,6 +951,160 @@ class WhiteboardCanvas(QGraphicsView):
             return True
 
         return False
+
+    def _handle_paste_shortcut(self) -> bool:
+        """
+        Handle paste shortcut (Ctrl+V) for images from clipboard.
+
+        Returns:
+            True if paste was handled, False otherwise
+        """
+        clipboard = QApplication.clipboard()
+        mime_data = clipboard.mimeData()
+
+        # Check if clipboard contains image data
+        if mime_data.hasImage():
+            self.logger.debug("Paste shortcut: clipboard contains image data")
+            return self._paste_image_from_clipboard()
+        elif mime_data.hasUrls():
+            # Check if URLs point to image files
+            urls = mime_data.urls()
+            image_urls = []
+            supported_formats = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".svg"}
+
+            for url in urls:
+                if url.isLocalFile():
+                    file_path = url.toLocalFile()
+                    file_extension = (
+                        file_path.lower().split(".")[-1] if "." in file_path else ""
+                    )
+                    if f".{file_extension}" in supported_formats:
+                        image_urls.append(url)
+
+            if image_urls:
+                self.logger.debug(f"Paste shortcut: found {len(image_urls)} image URLs")
+                return self._paste_images_from_urls(image_urls)
+
+        self.logger.debug("Paste shortcut: no supported content in clipboard")
+        return False
+
+    def _paste_image_from_clipboard(self) -> bool:
+        """
+        Paste an image directly from clipboard.
+
+        Returns:
+            True if image was pasted successfully, False otherwise
+        """
+        try:
+            clipboard = QApplication.clipboard()
+            image = clipboard.image()
+
+            if image.isNull():
+                self.logger.warning("Failed to get image from clipboard")
+                return False
+
+            # Convert QImage to pixmap and save to a temporary file
+            pixmap = QPixmap.fromImage(image)
+            if pixmap.isNull():
+                self.logger.warning("Failed to convert clipboard image to pixmap")
+                return False
+
+            # Save to temporary file
+            import tempfile
+            import os
+
+            temp_dir = tempfile.gettempdir()
+            temp_file = os.path.join(temp_dir, "clipboard_image.png")
+
+            if not pixmap.save(temp_file, "PNG"):
+                self.logger.error("Failed to save clipboard image to temporary file")
+                return False
+
+            # Get paste position (center of current view)
+            paste_position = self.mapToScene(self.rect().center())
+
+            # Add image to canvas using existing command system
+            cmd = AddImageCommand(self._scene, self, temp_file, paste_position)
+            self.execute_command(cmd)
+
+            # Clean up temporary file after a delay
+            from PyQt6.QtCore import QTimer
+
+            QTimer.singleShot(5000, lambda: self._cleanup_temp_file(temp_file))
+
+            self.logger.info("Successfully pasted image from clipboard")
+            self.note_hover_hint.emit("✅ Image pasted from clipboard")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to paste image from clipboard: {e}")
+            self.note_hover_hint.emit("❌ Failed to paste image from clipboard")
+            return False
+
+    def _paste_images_from_urls(self, urls: list) -> bool:
+        """
+        Paste images from clipboard URLs.
+
+        Args:
+            urls: List of QUrl objects pointing to image files
+
+        Returns:
+            True if images were pasted successfully, False otherwise
+        """
+        try:
+            paste_position = self.mapToScene(self.rect().center())
+            processed_count = 0
+
+            # Offset subsequent images to avoid stacking
+            offset = 0
+
+            for url in urls:
+                if url.isLocalFile():
+                    file_path = url.toLocalFile()
+
+                    # Create offset position for multiple images
+                    offset_position = QPointF(
+                        paste_position.x() + offset, paste_position.y() + offset
+                    )
+
+                    cmd = AddImageCommand(self._scene, self, file_path, offset_position)
+                    self.execute_command(cmd)
+
+                    processed_count += 1
+                    offset += 20  # Increment offset for next image
+
+            if processed_count > 0:
+                self.logger.info(
+                    f"Successfully pasted {processed_count} images from clipboard URLs"
+                )
+                self.note_hover_hint.emit(
+                    f"✅ {processed_count} image(s) pasted from clipboard"
+                )
+                return True
+            else:
+                self.logger.warning("No images were successfully pasted from URLs")
+                return False
+
+        except Exception as e:
+            self.logger.error(f"Failed to paste images from URLs: {e}")
+            self.note_hover_hint.emit("❌ Failed to paste images from clipboard")
+            return False
+
+    def _cleanup_temp_file(self, file_path: str) -> None:
+        """
+        Clean up temporary file after delay.
+
+        Args:
+            file_path: Path to temporary file to delete
+        """
+        try:
+            import os
+
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                self.logger.debug(f"Cleaned up temporary file: {file_path}")
+        except Exception as e:
+            self.logger.warning(f"Failed to cleanup temporary file {file_path}: {e}")
 
     def zoom_in(self) -> None:
         """Zoom in on the canvas with enhanced user experience."""
@@ -1591,6 +1741,13 @@ class WhiteboardCanvas(QGraphicsView):
         # Template notes
         template_menu = create_menu.addMenu("📋 From Template")
         self._populate_canvas_template_menu(template_menu, scene_pos)
+
+        menu.addSeparator()
+
+        # Paste section
+        paste_action = menu.addAction("📋 Paste Image")
+        paste_action.setShortcut(QKeySequence("Ctrl+V"))
+        paste_action.triggered.connect(self._handle_paste_shortcut)
 
         menu.addSeparator()
 
