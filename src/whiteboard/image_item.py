@@ -303,6 +303,88 @@ class ImageItem(QGraphicsPixmapItem):
                 "style": self._style.copy(),
             }
 
+    def get_image_bytes(self) -> bytes | None:
+        """
+        Get image bytes for serialization.
+
+        Tries to read from file first, then falls back to encoding from pixmap.
+
+        Returns:
+            Image bytes encoded as PNG, or None if extraction fails
+        """
+        # Try to read from file first
+        if self._image_path:
+            try:
+                from pathlib import Path
+
+                if Path(self._image_path).exists():
+                    with open(self._image_path, "rb") as f:
+                        return f.read()
+            except Exception as e:
+                self.logger.warning(
+                    f"Failed to read image from file {self._image_path}: {e}"
+                )
+
+        # Fall back to encoding from pixmap
+        if self._original_pixmap and not self._original_pixmap.isNull():
+            try:
+                from PyQt6.QtCore import QBuffer, QIODevice
+
+                # Convert pixmap to byte array using QBuffer
+                buffer = QBuffer()
+                buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+                self._original_pixmap.save(buffer, "PNG")
+                buffer.close()
+                return bytes(buffer.data())
+            except Exception as e:
+                self.logger.warning(f"Failed to encode image from pixmap: {e}")
+
+        return None
+
+    def get_image_filename(self) -> str:
+        """
+        Get the filename for the image.
+
+        Returns:
+            Filename with extension, or default if unknown
+        """
+        from pathlib import Path
+
+        if self._image_path:
+            return Path(self._image_path).name
+        return "image.png"
+
+    def set_pixmap_from_bytes(self, image_bytes: bytes) -> bool:
+        """
+        Set the pixmap directly from image bytes.
+
+        Args:
+            image_bytes: Raw image bytes (PNG encoded)
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            from PyQt6.QtGui import QPixmap
+
+            # Load pixmap directly from bytes
+            pixmap = QPixmap()
+            if pixmap.loadFromData(image_bytes):
+                self._original_pixmap = pixmap
+                self._image_path = ""  # Clear path since it's embedded
+                self._scale_image()
+                self.logger.debug(
+                    f"Set pixmap from bytes: {len(image_bytes)} bytes, "
+                    f"size: {pixmap.width()}x{pixmap.height()}"
+                )
+                return True
+            else:
+                self.logger.warning("Failed to load pixmap from bytes")
+                return False
+        except Exception as e:
+            self.logger.error(f"Failed to set pixmap from bytes: {e}")
+            return False
+
     def _create_resize_handles(self) -> None:
         """Create resize handles for the image."""
         # Create handles for all corners and edges

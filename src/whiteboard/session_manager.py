@@ -766,6 +766,9 @@ class SessionManager(QObject):
         """
         Serialize a single image item with base64 encoding.
 
+        Tries to read from file first, then falls back to encoding from pixmap
+        (important for clipboard images where the temp file may not exist).
+
         Args:
             image: ImageItem to serialize
 
@@ -780,25 +783,30 @@ class SessionManager(QObject):
             image_data = image.get_image_data()
             image_path = image.get_image_path()
 
-            # Encode image file as base64 if path exists
+            # Encode image file as base64 - try file first, then pixmap
             image_base64 = None
             original_filename = None
             file_size = None
 
-            if image_path and Path(image_path).exists():
+            # Use the new method that tries file first, then pixmap
+            image_bytes = image.get_image_bytes()
+            if image_bytes:
                 try:
-                    with open(image_path, "rb") as f:
-                        image_bytes = f.read()
-                        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
-                        original_filename = Path(image_path).name
-                        file_size = len(image_bytes)
+                    image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+                    original_filename = image.get_image_filename()
+                    file_size = len(image_bytes)
 
                     self.logger.debug(
-                        f"Encoded image {image_path} as base64 ({file_size} bytes)"
+                        f"Encoded image from {'file' if image_path and Path(image_path).exists() else 'pixmap'} "
+                        f"({file_size} bytes)"
                     )
                 except Exception as e:
-                    self.logger.warning(f"Failed to encode image {image_path}: {e}")
-                    # Continue without base64 data, just store the path
+                    self.logger.warning(f"Failed to encode image to base64: {e}")
+                    # Continue without base64 data
+            else:
+                self.logger.warning(
+                    f"No image data available for {image_path or 'unknown path'}"
+                )
 
             # Get image style properties and serialize QColor objects
             style = image_data.get("style", {})
@@ -819,6 +827,12 @@ class SessionManager(QObject):
                 "metadata": {
                     "serialized_at": datetime.now().isoformat(),
                     "has_base64": image_base64 is not None,
+                    "pixmap_width": image.pixmap().width()
+                    if not image.pixmap().isNull()
+                    else 0,
+                    "pixmap_height": image.pixmap().height()
+                    if not image.pixmap().isNull()
+                    else 0,
                 },
             }
 
@@ -831,7 +845,9 @@ class SessionManager(QObject):
 
     def _deserialize_image(self, image_data: dict[str, Any]) -> ImageItem | None:
         """
-        Deserialize a single image item from base64 or file path.
+        Deserialize a single image item from base64 data.
+
+        Images are fully embedded in the whiteboard file - no external temp files.
 
         Args:
             image_data: Dictionary containing serialized image data
@@ -844,67 +860,14 @@ class SessionManager(QObject):
             position_data = image_data.get("position", {})
             position = QPointF(position_data.get("x", 0), position_data.get("y", 0))
 
-            # Try to restore image from base64 first, then fall back to file path
-            image_path = ""
+            # Create image item - start with empty path (fully embedded)
+            image = ImageItem("", position)
 
-            if image_data.get("image_base64"):
-                try:
-                    # Decode base64 image data
-                    image_bytes = base64.b64decode(image_data["image_base64"])
+            # Load image data (from base64 or legacy path)
+            self._load_image_from_data(image, image_data)
 
-                    # Create temporary file for the image
-                    original_filename = image_data.get("original_filename", "image.png")
-                    temp_dir = Path.home() / ".whiteboard" / "temp_images"
-                    temp_dir.mkdir(parents=True, exist_ok=True)
-
-                    # Use image ID to create unique filename
-                    image_id = image_data.get("id", "unknown")
-                    temp_filename = f"{image_id}_{original_filename}"
-                    temp_path = temp_dir / temp_filename
-
-                    # Write decoded image to temporary file
-                    with open(temp_path, "wb") as f:
-                        f.write(image_bytes)
-
-                    image_path = str(temp_path)
-                    self.logger.debug(f"Restored image from base64 to {image_path}")
-
-                except Exception as e:
-                    self.logger.warning(f"Failed to decode base64 image: {e}")
-                    # Fall back to original path if available
-                    image_path = image_data.get("image_path", "")
-            else:
-                # Use original file path
-                image_path = image_data.get("image_path", "")
-
-                # Validate that the file still exists
-                if image_path and not Path(image_path).exists():
-                    self.logger.warning(f"Image file not found: {image_path}")
-                    # Continue anyway - ImageItem will handle missing files gracefully
-
-            # Create new image item
-            image = ImageItem(image_path, position)
-
-            # Restore style
-            style_data = image_data.get("style", {})
-            if style_data:
-                deserialized_style = self._deserialize_style(style_data)
-                image.update_style(deserialized_style)
-
-            # Restore other properties
-            image.setZValue(image_data.get("z_value", 0))
-            image.setVisible(image_data.get("visible", True))
-            image.setEnabled(image_data.get("enabled", True))
-
-            # Restore rotation if present
-            rotation = image_data.get("rotation", 0)
-            if rotation != 0:
-                image._rotation = rotation
-                image._apply_transform()
-
-            # Update image ID if provided
-            if "id" in image_data:
-                image._image_id = image_data["id"]
+            # Restore properties
+            self._restore_image_properties(image, image_data)
 
             self.logger.debug(f"Deserialized ImageItem {image.get_image_id()}")
             return image
@@ -913,3 +876,68 @@ class SessionManager(QObject):
             self.logger.error(f"Failed to deserialize image: {e}")
             # Return None to skip this image rather than failing the entire deserialization
             return None
+
+    def _load_image_from_data(
+        self, image: ImageItem, image_data: dict[str, Any]
+    ) -> None:
+        """Load image from base64 data or legacy path."""
+        image_base64 = image_data.get("image_base64")
+
+        if image_base64:
+            self._load_image_from_base64(image, image_base64)
+        else:
+            self._load_image_from_legacy_path(image, image_data)
+
+    def _load_image_from_base64(self, image: ImageItem, image_base64: str) -> None:
+        """Decode and load image from base64 data."""
+        try:
+            image_bytes = base64.b64decode(image_base64)
+
+            if image.set_pixmap_from_bytes(image_bytes):
+                self.logger.debug(
+                    f"Loaded image from embedded base64: {len(image_bytes)} bytes"
+                )
+            else:
+                self.logger.warning(
+                    "Failed to load image from embedded data, using placeholder"
+                )
+        except Exception as e:
+            self.logger.warning(f"Failed to decode embedded image: {e}")
+
+    def _load_image_from_legacy_path(
+        self, image: ImageItem, image_data: dict[str, Any]
+    ) -> None:
+        """Load image from legacy file path."""
+        image_path = image_data.get("image_path", "")
+        if image_path and Path(image_path).exists():
+            image._load_image(image_path)
+            self.logger.debug(f"Loaded image from original path: {image_path}")
+        elif image.pixmap().isNull():
+            self.logger.warning(
+                f"Image has no embedded data and original file not found: {image_path}"
+            )
+
+    def _restore_image_properties(
+        self, image: ImageItem, image_data: dict[str, Any]
+    ) -> None:
+        """Restore style and other properties for the image."""
+        # Restore style
+        style_data = image_data.get("style", {})
+        if style_data:
+            deserialized_style = self._deserialize_style(style_data)
+            image.update_style(deserialized_style)
+
+        # Restore other properties
+        image.setZValue(image_data.get("z_value", 0))
+        image.setVisible(image_data.get("visible", True))
+        image.setEnabled(image_data.get("enabled", True))
+
+        # Restore rotation if present
+        rotation = image_data.get("rotation", 0)
+        if rotation != 0:
+            image._rotation = rotation
+            image._apply_transform()
+
+        # Update image ID if provided
+        if "id" in image_data:
+            image._image_id = image_data["id"]
