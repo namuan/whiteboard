@@ -693,26 +693,23 @@ class WhiteboardCanvas(QGraphicsView):
         if not selected_items:
             return False
 
-        # Delegate to centralized deletion with single confirmation
+        # Delegate to centralized deletion
         return self.delete_items_with_confirmation(selected_items)
 
     def delete_items_with_confirmation(self, items: list) -> bool:
-        """Centralize deletion flow with a single warning dialog.
+        """Delete items without confirmation dialog.
 
-        Shows one warning dialog summarizing the deletion, then performs
-        deletions for supported item types.
+        Performs deletions for supported item types using the command system.
 
         Args:
             items: Selected items to delete
 
         Returns:
-            True if handled (deleted or canceled), False otherwise
+            True if handled, False otherwise
         """
         if not items:
             self.logger.debug("delete_items_with_confirmation called with no items")
             return False
-
-        parent = self.window()
 
         # Collect deletable items by type
         notes, connections, images = self._collect_deletable_items(items)
@@ -725,9 +722,7 @@ class WhiteboardCanvas(QGraphicsView):
             f"Centralized delete confirmation for {total_count} item(s): {summary}"
         )
 
-        if not self._confirm_centralized_deletion(parent, summary, total_count):
-            self.logger.debug("Centralized delete canceled by user")
-            return True  # handled
+        # Proceed with deletion without confirmation dialog
 
         # Perform deletion via command system
         try:
@@ -740,7 +735,7 @@ class WhiteboardCanvas(QGraphicsView):
             self.logger.error(f"Failed to execute delete command: {e}")
         return True
 
-    # ---- Centralized deletion helpers (reduced complexity) ----
+    # ---- Deletion helpers ----
     def _collect_deletable_items(self, items: list) -> tuple[list, list, list]:
         """Partition items into deletable categories with clear logging."""
         notes = [it for it in items if hasattr(it, "_note_id")]
@@ -768,29 +763,6 @@ class WhiteboardCanvas(QGraphicsView):
         summary = ", ".join(parts)
         total_count = len(notes) + len(connections) + len(images)
         return total_count, summary
-
-    def _confirm_centralized_deletion(
-        self, parent, summary: str, total_count: int
-    ) -> bool:
-        """Show a single confirmation dialog for deletion and return user's choice."""
-        from PyQt6.QtWidgets import QMessageBox
-
-        message = (
-            f"Are you sure you want to delete {summary}? This action cannot be undone."
-        )
-        self.logger.debug(
-            "Showing centralized delete dialog for %d item(s): %s",
-            total_count,
-            summary,
-        )
-        reply = QMessageBox.question(
-            parent,
-            "Delete Selected Items",
-            message,
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        return reply == QMessageBox.StandardButton.Yes
 
     def _delete_connections(self, connections: list) -> int:
         """Delete connection items safely with logging."""
