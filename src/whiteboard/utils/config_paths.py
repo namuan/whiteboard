@@ -190,6 +190,19 @@ def get_recent_files_path() -> Path:
     return get_app_config_dir() / "recent_files.json"
 
 
+def get_app_state_file_path() -> Path:
+    """
+    Get the path to the application state file.
+
+    The state file stores application-level state such as the last opened document.
+    This follows OS-specific conventions for storing application data.
+
+    Returns:
+        Path to app_state.json in the config directory
+    """
+    return get_app_config_dir() / "app_state.json"
+
+
 def get_platform_info() -> dict:
     """
     Get information about the current platform and configuration paths.
@@ -205,4 +218,5 @@ def get_platform_info() -> dict:
         "log_dir": str(get_app_log_dir()),
         "styles_file": str(get_styles_file_path()),
         "settings_file": str(get_app_settings_file_path()),
+        "state_file": str(get_app_state_file_path()),
     }

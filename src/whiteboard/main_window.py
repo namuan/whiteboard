@@ -23,6 +23,7 @@ from .goto_dialog import GoToDialog
 from .utils.logging_config import get_logger
 from .canvas import WhiteboardScene, WhiteboardCanvas
 from .session_manager import SessionManager, SessionError
+from .state_manager import AppStateManager
 from .navigation_panel import NavigationPanel
 
 
@@ -230,6 +231,9 @@ class MainWindow(QMainWindow):
         self._session_manager = SessionManager()
         self._setup_session_connections()
 
+        # Initialize state manager
+        self._state_manager = AppStateManager()
+
         # Initialize auto-save functionality
         self._auto_save_timer = QTimer()
         self._auto_save_timer.timeout.connect(self._auto_save)
@@ -246,6 +250,9 @@ class MainWindow(QMainWindow):
         self._setup_status_bar()
         self._setup_canvas_connections()
         self._setup_navigation_connections()
+
+        # Load last document if available
+        self._load_last_document()
 
         self.logger.info("MainWindow initialized successfully")
 
@@ -782,6 +789,10 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """Handle window close event."""
         try:
+            # Save current file path as last document if there is one
+            if self._current_file_path:
+                self._state_manager.set_last_document_path(str(self._current_file_path))
+
             # TODO: Check for unsaved changes in later tasks
             self.logger.info("Application closing")
             event.accept()
@@ -836,45 +847,57 @@ class MainWindow(QMainWindow):
         )
 
         if file_path:
-            try:
-                # Load session data
-                session_data = self._session_manager.load_session_from_file(
-                    Path(file_path)
-                )
+            self._load_document(Path(file_path))
 
-                # Clear current scene
-                self._scene.clear()
+    def _load_document(self, file_path: Path) -> bool:
+        """
+        Load a document from the given path.
 
-                # Deserialize and populate scene
-                self._session_manager.deserialize_scene_data(
-                    session_data, self._scene, self._canvas
-                )
+        Args:
+            file_path: Path to the whiteboard file
 
-                # Update current file path
-                self._current_file_path = Path(file_path)
+        Returns:
+            True if loaded successfully, False otherwise
+        """
+        try:
+            # Load session data
+            session_data = self._session_manager.load_session_from_file(file_path)
 
-                # Update window title
-                self.setWindowTitle(
-                    f"Digital Whiteboard - {self._current_file_path.name}"
-                )
+            # Clear current scene
+            self._scene.clear()
 
-                # Reset scene modified flag and start auto-save
-                self._scene_modified = False
-                if self._auto_save_enabled:
-                    self.start_auto_save()
+            # Deserialize and populate scene
+            self._session_manager.deserialize_scene_data(
+                session_data, self._scene, self._canvas
+            )
 
-                self.logger.info(f"Successfully loaded whiteboard from: {file_path}")
+            # Update current file path
+            self._current_file_path = file_path
 
-            except SessionError as e:
-                QMessageBox.critical(
-                    self, "Load Error", f"Failed to load whiteboard:\n{e}"
-                )
-                self.logger.error(f"Failed to load whiteboard: {e}")
-            except Exception as e:
-                QMessageBox.critical(
-                    self, "Load Error", f"Unexpected error while loading:\n{e}"
-                )
-                self.logger.error(f"Unexpected error while loading: {e}")
+            # Save to state manager as last document
+            self._state_manager.set_last_document_path(str(file_path))
+
+            # Update window title
+            self.setWindowTitle(f"Digital Whiteboard - {file_path.name}")
+
+            # Reset scene modified flag and start auto-save
+            self._scene_modified = False
+            if self._auto_save_enabled:
+                self.start_auto_save()
+
+            self.logger.info(f"Successfully loaded whiteboard from: {file_path}")
+            return True
+
+        except SessionError as e:
+            QMessageBox.critical(self, "Load Error", f"Failed to load whiteboard:\n{e}")
+            self.logger.error(f"Failed to load whiteboard: {e}")
+            return False
+        except Exception as e:
+            QMessageBox.critical(
+                self, "Load Error", f"Unexpected error while loading:\n{e}"
+            )
+            self.logger.error(f"Unexpected error while loading: {e}")
+            return False
 
     def _on_save(self) -> None:
         """Handle Save action."""
@@ -915,6 +938,9 @@ class MainWindow(QMainWindow):
 
             # Update current file path
             self._current_file_path = file_path
+
+            # Save to state manager as last document
+            self._state_manager.set_last_document_path(str(file_path))
 
             # Update window title
             self.setWindowTitle(f"Digital Whiteboard - {file_path.name}")
@@ -1151,6 +1177,27 @@ These shortcuts work when the canvas has focus."""
             self.logger.info("Navigation panel connections setup completed")
         except Exception as e:
             self.logger.error(f"Error setting up navigation connections: {e}")
+
+    def _load_last_document(self) -> None:
+        """
+        Load the last document if available.
+
+        This is called during application startup to restore the last document
+        the user was working on.
+        """
+        last_doc_path = self._state_manager.get_last_document_path()
+
+        if last_doc_path:
+            file_path = Path(last_doc_path)
+            if file_path.exists():
+                self.logger.info(f"Loading last document: {file_path}")
+                self._load_document(file_path)
+            else:
+                self.logger.info(
+                    f"Last document not found, starting with new whiteboard: {file_path}"
+                )
+        else:
+            self.logger.debug("No last document found, starting with new whiteboard")
 
     def _on_navigation_zoom_changed(self, zoom_level: float) -> None:
         """Handle zoom changes from navigation panel."""
