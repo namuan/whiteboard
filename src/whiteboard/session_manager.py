@@ -35,13 +35,13 @@ class SessionManager(QObject):
 
     Provides functionality for:
     - Data serialization for notes, connections, and groups
-    - JSON-based file format for session storage
+    - Whiteboard file format (.whiteboard) for session storage
     - Data validation and error handling for file operations
     - Session metadata management
 
     Requirements addressed:
     - 7.1: Data serialization for notes, connections, and groups
-    - 8.1: JSON-based file format for session storage
+    - 8.1: Whiteboard-based file format for session storage
     - 8.3: Data validation and error handling for file operations
     """
 
@@ -52,6 +52,9 @@ class SessionManager(QObject):
 
     # File format version for session files
     FILE_FORMAT_VERSION = "1.0"
+
+    # Dedicated extension for whiteboard files
+    FILE_EXTENSION = ".whiteboard"
 
     def __init__(self, parent=None):
         """
@@ -720,9 +723,9 @@ class SessionManager(QObject):
         Returns:
             Path to the session file
         """
-        # Ensure session name has .json extension
-        if not session_name.endswith(".json"):
-            session_name += ".json"
+        # Ensure session name has .whiteboard extension
+        if not session_name.endswith(self.FILE_EXTENSION):
+            session_name += self.FILE_EXTENSION
 
         return self._sessions_dir / session_name
 
@@ -737,7 +740,7 @@ class SessionManager(QObject):
             sessions = []
 
             if self._sessions_dir.exists():
-                for file_path in self._sessions_dir.glob("*.json"):
+                for file_path in self._sessions_dir.glob(f"*{self.FILE_EXTENSION}"):
                     try:
                         # Get file modification time
                         modified_time = datetime.fromtimestamp(

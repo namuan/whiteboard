@@ -832,7 +832,7 @@ class MainWindow(QMainWindow):
             self,
             "Open Whiteboard",
             str(Path.home()),
-            "Whiteboard Files (*.json);;All Files (*)",
+            f"Whiteboard Files (*{SessionManager.FILE_EXTENSION});;All Files (*)",
         )
 
         if file_path:
@@ -895,8 +895,8 @@ class MainWindow(QMainWindow):
         file_path, _ = QFileDialog.getSaveFileName(
             self,
             "Save Whiteboard",
-            str(Path.home() / "untitled.json"),
-            "Whiteboard Files (*.json);;All Files (*)",
+            str(Path.home() / f"untitled{SessionManager.FILE_EXTENSION}"),
+            f"Whiteboard Files (*{SessionManager.FILE_EXTENSION});;All Files (*)",
         )
 
         if file_path:

@@ -86,6 +86,7 @@ class TestSessionManager(unittest.TestCase):
         # Verify initialization
         self.assertIsInstance(self.session_manager, SessionManager)
         self.assertEqual(self.session_manager.FILE_FORMAT_VERSION, "1.0")
+        self.assertEqual(self.session_manager.FILE_EXTENSION, ".whiteboard")
 
         # Verify logger is set up
         self.assertIsNotNone(self.session_manager.logger)
@@ -432,13 +433,18 @@ class TestSessionManager(unittest.TestCase):
 
     def test_get_default_session_path(self):
         """Test getting default session path."""
-        # Test with extension
-        path1 = self.session_manager.get_default_session_path("test.json")
-        self.assertTrue(str(path1).endswith("test.json"))
+        # Get the expected extension from session manager
+        expected_extension = self.session_manager.FILE_EXTENSION
 
-        # Test without extension
+        # Test with extension (should keep the provided extension)
+        path1 = self.session_manager.get_default_session_path(
+            f"test{expected_extension}"
+        )
+        self.assertTrue(str(path1).endswith(f"test{expected_extension}"))
+
+        # Test without extension (should add the extension)
         path2 = self.session_manager.get_default_session_path("test")
-        self.assertTrue(str(path2).endswith("test.json"))
+        self.assertTrue(str(path2).endswith(f"test{expected_extension}"))
 
     @patch("pathlib.Path.glob")
     @patch("pathlib.Path.exists")
