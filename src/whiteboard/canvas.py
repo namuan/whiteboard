@@ -404,8 +404,8 @@ class WhiteboardCanvas(QGraphicsView):
         Args:
             event: Wheel event containing scroll information
         """
-        # Check if Ctrl is pressed for zoom, otherwise scroll
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+        # Check if Option (Alt) is pressed for zoom, otherwise scroll
+        if event.modifiers() & Qt.KeyboardModifier.AltModifier:
             # Get mouse position in view coordinates
             mouse_pos = event.position()
 
@@ -415,24 +415,30 @@ class WhiteboardCanvas(QGraphicsView):
             # Store the current zoom factor
             old_zoom = self._zoom_factor
 
-            # Zoom in/out based on wheel direction
+            # Calculate zoom delta with smaller step for slower zooming with Option key
+            zoom_delta = 1.01
+
+            # Zoom in/out based on wheel direction with reduced step
             if event.angleDelta().y() > 0:
-                self.zoom_in()
+                new_zoom = min(self._zoom_factor * zoom_delta, self._max_zoom)
             else:
-                self.zoom_out()
+                new_zoom = max(self._zoom_factor / zoom_delta, self._min_zoom)
 
-            # Calculate the new scene position under the mouse after zooming
-            new_scene_pos = self.mapToScene(mouse_pos.toPoint())
+            if new_zoom != old_zoom:
+                self._set_zoom(new_zoom)
 
-            # Calculate the difference and adjust the view to keep the scene point under the cursor
-            delta = new_scene_pos - scene_pos
+                # Calculate the new scene position under the mouse after zooming
+                new_scene_pos = self.mapToScene(mouse_pos.toPoint())
 
-            # Pan the view to compensate for the zoom shift
-            self.pan(-delta.x(), -delta.y())
+                # Calculate the difference and adjust the view to keep the scene point under the cursor
+                delta = new_scene_pos - scene_pos
 
-            self.logger.debug(
-                f"Zoom-to-cursor: old_zoom={old_zoom:.2f}, new_zoom={self._zoom_factor:.2f}, scene_pos=({scene_pos.x():.1f}, {scene_pos.y():.1f})"
-            )
+                # Pan the view to compensate for the zoom shift
+                self.pan(-delta.x(), -delta.y())
+
+                self.logger.debug(
+                    f"Zoom-to-cursor (Option): old_zoom={old_zoom:.2f}, new_zoom={self._zoom_factor:.2f}, scene_pos=({scene_pos.x():.1f}, {scene_pos.y():.1f})"
+                )
         else:
             # Default scroll behavior
             super().wheelEvent(event)
