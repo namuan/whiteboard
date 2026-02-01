@@ -13,6 +13,7 @@ from PyQt6.QtGui import (
     QMouseEvent,
     QColor,
     QPen,
+    QBrush,
     QContextMenuEvent,
     QKeySequence,
     QDragEnterEvent,
@@ -318,6 +319,11 @@ class WhiteboardCanvas(QGraphicsView):
         self._pan_mode = False
         self._last_pan_point = QPointF()
 
+        # Zoom selection configuration (Shift+drag)
+        self._zoom_selection_mode = False
+        self._zoom_selection_start = QPointF()
+        self._zoom_selection_rect_item = None
+
         # Connection creation configuration
         self._connection_mode = False
         self._connection_start_note = None
@@ -445,7 +451,7 @@ class WhiteboardCanvas(QGraphicsView):
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         """
-        Handle mouse press events for pan initiation and connection creation.
+        Handle mouse press events for pan initiation, zoom selection, and connection creation.
 
         Args:
             event: Mouse press event
@@ -459,10 +465,28 @@ class WhiteboardCanvas(QGraphicsView):
             event.button() == Qt.MouseButton.LeftButton
             and event.modifiers() & Qt.KeyboardModifier.ShiftModifier
         ):
-            # Alternative pan with Shift+Left click
-            self._pan_mode = True
-            self._last_pan_point = event.position()
-            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            # Zoom selection mode with Shift+Left drag
+            self._zoom_selection_mode = True
+            # Store start position in scene coordinates
+            self._zoom_selection_start = self.mapToScene(event.pos())
+
+            # Create the zoom selection rectangle if it doesn't exist
+            if self._zoom_selection_rect_item is None:
+                from PyQt6.QtWidgets import QGraphicsRectItem
+
+                self._zoom_selection_rect_item = QGraphicsRectItem()
+                self._zoom_selection_rect_item.setPen(
+                    QPen(QColor(0, 120, 215), 2, Qt.PenStyle.DashLine)
+                )
+                self._zoom_selection_rect_item.setBrush(QBrush(QColor(0, 120, 215, 30)))
+                self._zoom_selection_rect_item.setZValue(1000)
+                self._zoom_selection_rect_item.setVisible(False)
+                self.scene().addItem(self._zoom_selection_rect_item)
+
+            self._zoom_selection_rect_item.setRect(0, 0, 0, 0)
+            self._zoom_selection_rect_item.setVisible(True)
+            self.setCursor(Qt.CursorShape.CrossCursor)
+            self.logger.debug("Started zoom selection")
         elif (
             event.button() == Qt.MouseButton.LeftButton
             and event.modifiers() & Qt.KeyboardModifier.ControlModifier
@@ -489,7 +513,7 @@ class WhiteboardCanvas(QGraphicsView):
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
         """
-        Handle mouse move events for panning and connection creation.
+        Handle mouse move events for panning, zoom selection, and connection creation.
 
         Args:
             event: Mouse move event
@@ -508,6 +532,17 @@ class WhiteboardCanvas(QGraphicsView):
 
             # Emit pan changed signal
             self.pan_changed.emit(self.mapToScene(self.rect().center()))
+        elif self._zoom_selection_mode:
+            # Update zoom selection rectangle using scene coordinates
+            start_scene = self._zoom_selection_start
+            current_scene = self.mapToScene(event.pos())
+
+            x = min(start_scene.x(), current_scene.x())
+            y = min(start_scene.y(), current_scene.y())
+            width = abs(current_scene.x() - start_scene.x())
+            height = abs(current_scene.y() - start_scene.y())
+
+            self._zoom_selection_rect_item.setRect(x, y, width, height)
         elif self._connection_mode:
             # Update connection preview
             self._update_connection_preview(event.position())
@@ -516,7 +551,7 @@ class WhiteboardCanvas(QGraphicsView):
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         """
-        Handle mouse release events to end panning and complete connections.
+        Handle mouse release events to end panning, complete zoom selection, and complete connections.
 
         Args:
             event: Mouse release event
@@ -527,6 +562,18 @@ class WhiteboardCanvas(QGraphicsView):
             # End panning
             self._pan_mode = False
             self.setCursor(Qt.CursorShape.ArrowCursor)
+        elif event.button() == Qt.MouseButton.LeftButton and self._zoom_selection_mode:
+            # Complete zoom selection
+            self._zoom_selection_mode = False
+            self._zoom_selection_rect_item.setVisible(False)
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+
+            # Get the scene rectangle directly from the item
+            scene_rect = self._zoom_selection_rect_item.rect()
+            if scene_rect.width() > 10 and scene_rect.height() > 10:
+                self._zoom_to_selection(scene_rect)
+            else:
+                self.logger.debug("Zoom selection too small, ignored")
         elif event.button() == Qt.MouseButton.LeftButton and self._connection_mode:
             # Complete connection creation
             self._complete_connection_creation(event.position())
@@ -1296,6 +1343,47 @@ class WhiteboardCanvas(QGraphicsView):
         self.zoom_changed.emit(self._zoom_factor)
         self.logger.info(
             f"Fitted content in view: zoom changed from {old_zoom:.2f}x to {self._zoom_factor:.2f}x"
+        )
+
+    def _zoom_to_selection(self, scene_rect) -> None:
+        """
+        Zoom to fill the specified selection rectangle.
+
+        Args:
+            scene_rect: QRectF in scene coordinates representing the selection area
+        """
+        if scene_rect.isNull() or scene_rect.isEmpty():
+            self.logger.warning("Invalid zoom selection rectangle")
+            return
+
+        # Store old zoom for logging
+        old_zoom = self._zoom_factor
+
+        # Calculate new zoom factor to fit selection to viewport
+        viewport_width = self.viewport().width()
+        viewport_height = self.viewport().height()
+
+        scale_x = viewport_width / scene_rect.width()
+        scale_y = viewport_height / scene_rect.height()
+
+        # Use the smaller scale to ensure the selection fits, then zoom in a bit more
+        zoom_factor = min(scale_x, scale_y) * 1.5
+
+        # Calculate new absolute zoom
+        new_zoom = self._zoom_factor * zoom_factor
+
+        # Clamp zoom to valid range
+        new_zoom = max(self._min_zoom, min(new_zoom, self._max_zoom))
+
+        # Apply the zoom
+        self._set_zoom(new_zoom)
+
+        # Center on the selection
+        self.centerOn(scene_rect.center())
+
+        self.logger.info(
+            f"Zoomed to selection: old_zoom={old_zoom:.2f}x, new_zoom={self._zoom_factor:.2f}x, "
+            f"selection={scene_rect.width():.0f}x{scene_rect.height():.0f}"
         )
 
     def get_zoom_factor(self) -> float:
